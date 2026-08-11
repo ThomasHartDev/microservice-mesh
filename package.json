@@ -1,0 +1,17 @@
+{
+  "name": "microservice-mesh",
+  "version": "0.1.0",
+  "description": "A realistic order-processing system split into independent services that talk over a message broker: an API gateway, an orders service, a payments service, an inventory service, and a notifications worker. Deliberately polyglot (Go gateway, TypeScript services, a Python worker) to show the same contracts across languages. Each service is containerized, wired together with docker-compose, then deployed to Kubernetes with Helm and an HPA.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

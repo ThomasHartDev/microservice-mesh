@@ -22,16 +22,22 @@ const placeOrder: JsonObject = {
   idempotency_key: 'client-key-001',
 }
 
+const ALL_MESSAGE_TYPES: MessageType[] = [
+  'commands.place_order',
+  'events.order_created',
+  'events.inventory_reserved',
+  'events.inventory_reservation_failed',
+  'events.payment_charged',
+  'events.payment_failed',
+  'events.order_completed',
+  'events.order_cancelled',
+]
+
 describe('contracts', () => {
-  it('catalog covers mesh messages with routing metadata', () => {
-    expect(listMessageTypes()).toEqual(
-      expect.arrayContaining([
-        'commands.place_order',
-        'events.order_created',
-        'events.payment_charged',
-        'events.order_cancelled',
-      ]),
-    )
+  it('catalog covers the full message type set with routing metadata', () => {
+    expect(listMessageTypes()).toEqual(ALL_MESSAGE_TYPES)
+    expect(CATALOG.map((e) => e.type).sort()).toEqual([...ALL_MESSAGE_TYPES].sort())
+    expect(CATALOG).toHaveLength(8)
     expect(CATALOG.every((e) => e.routing_key && e.consumers.length > 0)).toBe(true)
     expect(getCatalogEntry('events.missing')).toBeUndefined()
   })
@@ -61,6 +67,69 @@ describe('contracts', () => {
     expect(
       validate({ order_id: A, reason: 'payment_failed', compensations: ['delete_db'] }, cancel.schema).ok,
     ).toBe(false)
+  })
+
+  it('rejects invalid UUIDs on message_id, correlation_id, and customer_id', () => {
+    const bad = 'not-a-uuid'
+    expect(
+      createEnvelope({
+        type: 'commands.place_order',
+        source: 'gateway',
+        payload: placeOrder,
+        correlation_id: B,
+        message_id: bad,
+        occurred_at: '2026-08-11T12:00:00.000Z',
+      }).ok,
+    ).toBe(false)
+    expect(
+      createEnvelope({
+        type: 'commands.place_order',
+        source: 'gateway',
+        payload: placeOrder,
+        correlation_id: bad,
+        message_id: A,
+        occurred_at: '2026-08-11T12:00:00.000Z',
+      }).ok,
+    ).toBe(false)
+    expect(
+      createEnvelope({
+        type: 'commands.place_order',
+        source: 'gateway',
+        payload: { ...placeOrder, customer_id: bad },
+        correlation_id: B,
+        message_id: A,
+        occurred_at: '2026-08-11T12:00:00.000Z',
+      }).ok,
+    ).toBe(false)
+    expect(validate({ ...placeOrder, customer_id: bad }, payloadSchemas.place_order).ok).toBe(false)
+    expect(validate({ ...placeOrder, customer_id: '550e8400-e29b-41d4-a716-44665544000g' }, payloadSchemas.place_order).ok).toBe(false)
+  })
+
+  it('accepts RFC3339 occurred_at and rejects non-ISO forms', () => {
+    const base = {
+      type: 'commands.place_order' as const,
+      source: 'gateway' as const,
+      payload: placeOrder,
+      correlation_id: B,
+      message_id: A,
+    }
+    expect(createEnvelope({ ...base, occurred_at: '2026-08-11T12:00:00.000Z' }).ok).toBe(true)
+    expect(createEnvelope({ ...base, occurred_at: '2026-08-11T12:00:00Z' }).ok).toBe(true)
+    expect(createEnvelope({ ...base, occurred_at: '2026-08-11T12:00:00+00:00' }).ok).toBe(true)
+    expect(createEnvelope({ ...base, occurred_at: '2026-08-11T05:00:00-07:00' }).ok).toBe(true)
+
+    expect(createEnvelope({ ...base, occurred_at: 'August 11, 2026' }).ok).toBe(false)
+    expect(createEnvelope({ ...base, occurred_at: '2026-08-11' }).ok).toBe(false)
+    expect(createEnvelope({ ...base, occurred_at: '2026/08/11 12:00:00' }).ok).toBe(false)
+    expect(createEnvelope({ ...base, occurred_at: '2026-08-11 12:00:00' }).ok).toBe(false)
+    expect(createEnvelope({ ...base, occurred_at: '11-08-2026T12:00:00Z' }).ok).toBe(false)
+
+    const good = createEnvelope({ ...base, occurred_at: '2026-08-11T12:00:00.000Z' })
+    expect(good.ok).toBe(true)
+    if (!good.ok || !good.envelope) return
+    expect(parseEnvelope(good.envelope).ok).toBe(true)
+    expect(parseEnvelope({ ...good.envelope, occurred_at: 'August 11, 2026' }).ok).toBe(false)
+    expect(parseEnvelope({ ...good.envelope, occurred_at: '2026-08-11' }).ok).toBe(false)
   })
 
   it('envelope create/parse enforces schema_version and known types', () => {
@@ -99,7 +168,73 @@ describe('contracts', () => {
     ).toBe(false)
   })
 
+  it('create/parse failure-path events including order_cancelled compensations', () => {
+    const paymentFailed = createEnvelope({
+      type: 'events.payment_failed',
+      source: 'payments',
+      payload: { order_id: A, reason: 'card_declined', retryable: false },
+      correlation_id: B,
+      message_id: A,
+      causation_id: C,
+      occurred_at: '2026-08-11T12:00:00.000Z',
+    })
+    expect(paymentFailed.ok).toBe(true)
+    if (!paymentFailed.ok || !paymentFailed.envelope) return
+    const parsedPayment = parseEnvelope(paymentFailed.envelope)
+    expect(parsedPayment.ok).toBe(true)
+    if (!parsedPayment.ok) return
+    expect(parsedPayment.envelope.type).toBe('events.payment_failed')
+    expect(parsedPayment.envelope.payload).toEqual({
+      order_id: A,
+      reason: 'card_declined',
+      retryable: false,
+    })
+
+    const invFailed = createEnvelope({
+      type: 'events.inventory_reservation_failed',
+      source: 'inventory',
+      payload: { order_id: A, reason: 'out_of_stock', failed_skus: ['SKU-1'] },
+      correlation_id: B,
+      message_id: C,
+      occurred_at: '2026-08-11T12:00:01.000Z',
+    })
+    expect(invFailed.ok).toBe(true)
+    if (!invFailed.ok || !invFailed.envelope) return
+    expect(parseEnvelope(invFailed.envelope).ok).toBe(true)
+
+    const cancelled = createEnvelope({
+      type: 'events.order_cancelled',
+      source: 'orders',
+      payload: {
+        order_id: A,
+        reason: 'payment_failed',
+        compensations: ['release_inventory', 'notify_customer'],
+      },
+      correlation_id: B,
+      message_id: '6ba7b812-9dad-11d1-80b4-00c04fd430c8',
+      causation_id: paymentFailed.envelope.message_id,
+      occurred_at: '2026-08-11T12:00:02.000Z',
+    })
+    expect(cancelled.ok).toBe(true)
+    if (!cancelled.ok || !cancelled.envelope) return
+    const parsedCancel = parseEnvelope(cancelled.envelope)
+    expect(parsedCancel.ok).toBe(true)
+    if (!parsedCancel.ok) return
+    expect(parsedCancel.envelope.type).toBe('events.order_cancelled')
+    expect(parsedCancel.envelope.payload['compensations']).toEqual([
+      'release_inventory',
+      'notify_customer',
+    ])
+  })
+
   it('round-trips the happy-path event sequence', () => {
+    const stepIds = [
+      '550e8400-e29b-41d4-a716-446655440001',
+      '550e8400-e29b-41d4-a716-446655440002',
+      '550e8400-e29b-41d4-a716-446655440003',
+      '550e8400-e29b-41d4-a716-446655440004',
+      '550e8400-e29b-41d4-a716-446655440005',
+    ]
     const steps: Array<{ type: MessageType; source: ServiceName; payload: JsonObject }> = [
       { type: 'commands.place_order', source: 'gateway', payload: placeOrder },
       {
@@ -130,14 +265,19 @@ describe('contracts', () => {
       },
     ]
     let causation: string | undefined
-    for (const step of steps) {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i]!
       const created = createEnvelope({
-        ...step, correlation_id: A, message_id: B, causation_id: causation,
+        ...step,
+        correlation_id: A,
+        message_id: stepIds[i]!,
+        causation_id: causation,
         occurred_at: '2026-08-11T12:00:00.000Z',
       })
       expect(created.ok, step.type).toBe(true)
       if (!created.ok || !created.envelope) return
       expect(parseEnvelope(created.envelope).ok, step.type).toBe(true)
+      if (i > 0) expect(created.envelope.causation_id).toBe(stepIds[i - 1])
       causation = created.envelope.message_id
     }
   })

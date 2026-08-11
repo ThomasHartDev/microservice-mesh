@@ -57,6 +57,32 @@ export type MessageEnvelope = {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+// RFC 3339 date-time: full date + time + Z or numeric offset (not date-only / locale).
+const DATE_TIME_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+
+function isRfc3339DateTime(value: string): boolean {
+  const m = DATE_TIME_RE.exec(value)
+  if (!m) return false
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  const hour = Number(m[4])
+  const minute = Number(m[5])
+  const second = Number(m[6])
+  if (month < 1 || month > 12) return false
+  if (hour > 23 || minute > 59 || second > 60) return false
+  const dim = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  if (day < 1 || day > dim) return false
+  const offset = m[8]!
+  if (offset !== 'Z') {
+    const oh = Number(offset.slice(1, 3))
+    const om = Number(offset.slice(4, 6))
+    if (oh > 23 || om > 59) return false
+  }
+  return true
+}
+
 const u = (): JsonSchema => ({ type: 'string', format: 'uuid' })
 const pos = (): JsonSchema => ({ type: 'integer', exclusiveMinimum: 0 })
 const nn = (): JsonSchema => ({ type: 'integer', minimum: 0 })
@@ -205,7 +231,7 @@ function check(value: unknown, schema: JsonSchema, path: string, errors: Validat
       errors.push({ path, message: 'pattern' })
     }
     if (schema.format === 'uuid' && !UUID_RE.test(value)) errors.push({ path, message: 'uuid' })
-    if (schema.format === 'date-time' && Number.isNaN(Date.parse(value))) {
+    if (schema.format === 'date-time' && !isRfc3339DateTime(value)) {
       errors.push({ path, message: 'date-time' })
     }
     return

@@ -19,6 +19,9 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm test

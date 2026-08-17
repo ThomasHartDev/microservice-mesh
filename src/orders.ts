@@ -81,7 +81,15 @@ export function requestFingerprint(input: {
   items: LineItem[]
   currency: string
 }): string {
-  return [input.customer_id, input.currency, ...input.items.map((it) => `${it.sku}\0${it.quantity}\0${it.unit_price_cents}`)].join('\n')
+  return JSON.stringify({
+    customer_id: input.customer_id,
+    currency: input.currency,
+    items: input.items.map((it) => ({
+      sku: it.sku,
+      quantity: it.quantity,
+      unit_price_cents: it.unit_price_cents,
+    })),
+  })
 }
 
 function asPlaceOrder(payload: JsonObject):

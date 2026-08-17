@@ -18,6 +18,7 @@ const D = '6ba7b812-9dad-11d1-80b4-00c04fd430c8'
 const E = '6ba7b813-9dad-11d1-80b4-00c04fd430c8'
 const F = '6ba7b814-9dad-11d1-80b4-00c04fd430c8'
 const G = '6ba7b815-9dad-11d1-80b4-00c04fd430c8'
+const H = '6ba7b816-9dad-11d1-80b4-00c04fd430c8'
 const AT = '2026-08-17T16:00:00.000Z'
 const items: LineItem[] = [{ sku: 'SKU-1', quantity: 2, unit_price_cents: 1500 }]
 const placeOrder: JsonObject = {
@@ -166,6 +167,62 @@ describe('OrdersService', () => {
       ],
     })
     expect(fpA).not.toBe(fpB)
+  })
+
+  it('conflicts when two carts share the old NUL/newline join but differ as JSON', async () => {
+    const { store, publisher, svc } = service()
+    const mergedSku = 'x\u00001\u00001\ny'
+    const firstItems: LineItem[] = [{ sku: mergedSku, quantity: 2, unit_price_cents: 3 }]
+    const secondItems: LineItem[] = [
+      { sku: 'x', quantity: 1, unit_price_cents: 1 },
+      { sku: 'y', quantity: 2, unit_price_cents: 3 },
+    ]
+    expect(
+      requestFingerprint({ customer_id: A, currency: 'USD', items: firstItems }),
+    ).not.toBe(requestFingerprint({ customer_id: A, currency: 'USD', items: secondItems }))
+
+    const first = await svc.handle(
+      command({ ...placeOrder, items: firstItems }, A),
+    )
+    expect(first.kind).toBe('created')
+    const clash = await svc.handle(
+      command({ ...placeOrder, items: secondItems }, F),
+    )
+    expect(clash.kind).toBe('conflict')
+    if (clash.kind === 'conflict') {
+      expect(clash.order.order_id).toBe(C)
+      expect(clash.order.items).toEqual(firstItems)
+    }
+    expect(store.all()).toHaveLength(1)
+    expect(publisher.events).toHaveLength(1)
+  })
+
+  it('conflicts when only customer_id or only currency changes', async () => {
+    const { store, publisher, svc } = service()
+    expect((await svc.handle(command(placeOrder, A))).kind).toBe('created')
+
+    const otherCustomer = await svc.handle(
+      command({ ...placeOrder, customer_id: H }, F),
+    )
+    expect(otherCustomer.kind).toBe('conflict')
+    if (otherCustomer.kind === 'conflict') {
+      expect(otherCustomer.order.order_id).toBe(C)
+      expect(otherCustomer.order.customer_id).toBe(A)
+      expect(otherCustomer.order.items).toEqual(items)
+    }
+
+    const otherCurrency = await svc.handle(
+      command({ ...placeOrder, currency: 'EUR' }, G),
+    )
+    expect(otherCurrency.kind).toBe('conflict')
+    if (otherCurrency.kind === 'conflict') {
+      expect(otherCurrency.order.order_id).toBe(C)
+      expect(otherCurrency.order.currency).toBe('USD')
+      expect(otherCurrency.order.items).toEqual(items)
+    }
+
+    expect(store.all()).toHaveLength(1)
+    expect(publisher.events).toHaveLength(1)
   })
 
   it('persists first, then republishes the same outbox event after broker failure', async () => {

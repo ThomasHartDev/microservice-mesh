@@ -170,7 +170,8 @@ func (b *Bus) deliver(ctx context.Context, s *sub, subject string, data []byte, 
 		return err
 	}
 	nacked := false
-	d := Delivery{Subject: subject, Data: data, ack: func() {}, nack: func() { nacked = true }}
+	copied := append([]byte(nil), data...)
+	d := Delivery{Subject: subject, Data: copied, ack: func() {}, nack: func() { nacked = true }}
 	if err := s.handler(d); err != nil {
 		nacked = true
 	}

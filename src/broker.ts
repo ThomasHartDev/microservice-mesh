@@ -87,7 +87,7 @@ export function createMemoryBroker(): Broker {
   const deliver = async (sub: Sub, subject: string, data: Uint8Array, attempt: number): Promise<void> => {
     let nacked = false
     try {
-      await sub.handler({ subject, data, ack: () => {}, nack: () => { nacked = true } })
+      await sub.handler({ subject, data: data.slice(), ack: () => {}, nack: () => { nacked = true } })
     } catch {
       nacked = true
     }
@@ -108,7 +108,7 @@ export function createMemoryBroker(): Broker {
       if (closed) throw new ClosedError()
       if (!validSubject(pattern, true)) throw new SubjectError('invalid pattern')
       const queue = opts?.queue
-      if (queue !== undefined && queue.length === 0) throw new SubjectError('invalid queue')
+      if (queue !== undefined && queue.trim() === '') throw new SubjectError('invalid queue')
       const sub: Sub = { id: nextId++, pattern, queue, handler }
       subs.push(sub)
       return {

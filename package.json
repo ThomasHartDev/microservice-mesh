@@ -5,8 +5,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "typecheck": "tsc --noEmit && go vet -C services/gateway ./...",
-    "test": "vitest run && go test -C services/gateway -race ./...",
+    "typecheck": "tsc --noEmit && go vet -C services/gateway ./... && python3 -m compileall -q python",
+    "test": "vitest run && go test -C services/gateway -race ./... && python3 -m unittest discover -s python -p 'test_*.py' -v",
     "test:watch": "vitest",
     "build": "tsc"
   },

@@ -30,6 +30,8 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Queue groups (competing consumers) versus fan-out subscriptions
 - Ack/nack with bounded redelivery (poison messages drop after max attempts)
 - Shared broker client libraries (Go and TypeScript) over one routing catalog
+- Shared broker client libraries (Go, TypeScript, and Python) over one routing catalog
+
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -42,6 +44,8 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Shared broker client libraries (Go and TypeScript) over one routing catalog
 - Shared JSON Schema contracts and message envelope
 - Broker wiring (NATS or RabbitMQ) with a shared client lib per language: in-memory NATS-style bus in TypeScript (`src/broker.ts`) and Go (`services/gateway/broker`), plus a gateway `EnvelopePublisher` that JSON-encodes envelopes onto catalog routing keys
+- Shared broker client libraries (Go, TypeScript, and Python) over one routing catalog
+- In-memory NATS-style bus in TypeScript (`src/broker.ts`), Go (`services/gateway/broker`), and Python (`python/broker.py`). Token subjects, `*` / `>` matching, queue groups, and max-3 nack redelivery. There is no NATS or RabbitMQ client, connection, or compose service yet. The gateway `EnvelopePublisher` JSON-encodes envelopes onto catalog routing keys and any `Publish(subject, []byte)` backend.
 ## Usage
 
 ```bash

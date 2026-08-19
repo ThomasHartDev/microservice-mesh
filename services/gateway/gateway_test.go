@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/thomashartdev/microservice-mesh/services/gateway/broker"
 )
 
 const validJSON = `{"customer_id":"550e8400-e29b-41d4-a716-446655440000","items":[{"sku":"SKU-1","quantity":2,"unit_price_cents":1500}],"currency":"USD","idempotency_key":"checkout-1"}`
@@ -126,11 +128,13 @@ func TestConcurrentPublish(t *testing.T) {
 
 type captureBus struct {
 	subj string
+	data []byte
 	err  error
 }
 
-func (c *captureBus) Publish(_ context.Context, subject string, _ []byte) error {
+func (c *captureBus) Publish(_ context.Context, subject string, data []byte) error {
 	c.subj = subject
+	c.data = append([]byte(nil), data...)
 	return c.err
 }
 
@@ -139,8 +143,30 @@ func TestEnvelopePublisher(t *testing.T) {
 	if post(New(EnvelopePublisher{Bus: cap}), validJSON, "application/json", "").Code != 202 || cap.subj != RoutingKeyPlaceOrder {
 		t.Fatal(cap.subj)
 	}
+	var env Envelope
+	if err := json.Unmarshal(cap.data, &env); err != nil || env.Type != MessageTypePlaceOrder {
+		t.Fatalf("body %s", cap.data)
+	}
 	if post(New(EnvelopePublisher{Bus: &captureBus{err: errors.New("down")}}), validJSON, "application/json", "").Code != 503 {
 		t.Fatal("503")
+	}
+
+	bus := broker.New()
+	var got []byte
+	_, err := bus.Subscribe("commands.place_order", func(d broker.Delivery) error {
+		got = append([]byte(nil), d.Data...)
+		d.Ack()
+		return nil
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if post(New(EnvelopePublisher{Bus: bus}), validJSON, "application/json", "").Code != 202 {
+		t.Fatal("bus")
+	}
+	var live Envelope
+	if err := json.Unmarshal(got, &live); err != nil || live.Type != MessageTypePlaceOrder {
+		t.Fatalf("bus body %s", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -120,6 +121,26 @@ func TestConcurrentPublish(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte(`"routing_key":"commands.place_order"`)) {
 		t.Fatalf("%s", buf.String())
+	}
+}
+
+type captureBus struct {
+	subj string
+	err  error
+}
+
+func (c *captureBus) Publish(_ context.Context, subject string, _ []byte) error {
+	c.subj = subject
+	return c.err
+}
+
+func TestEnvelopePublisher(t *testing.T) {
+	cap := &captureBus{}
+	if post(New(EnvelopePublisher{Bus: cap}), validJSON, "application/json", "").Code != 202 || cap.subj != RoutingKeyPlaceOrder {
+		t.Fatal(cap.subj)
+	}
+	if post(New(EnvelopePublisher{Bus: &captureBus{err: errors.New("down")}}), validJSON, "application/json", "").Code != 503 {
+		t.Fatal("503")
 	}
 }
 

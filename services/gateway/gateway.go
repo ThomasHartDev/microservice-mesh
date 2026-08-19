@@ -66,6 +66,20 @@ type Publisher interface {
 	Publish(ctx context.Context, routingKey string, env Envelope) error
 }
 
+type ByteBus interface {
+	Publish(ctx context.Context, subject string, data []byte) error
+}
+
+type EnvelopePublisher struct{ Bus ByteBus }
+
+func (p EnvelopePublisher) Publish(ctx context.Context, routingKey string, env Envelope) error {
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	return p.Bus.Publish(ctx, routingKey, raw)
+}
+
 type Recorded struct {
 	RoutingKey string
 	Envelope   Envelope

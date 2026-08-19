@@ -26,12 +26,22 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Containerization and local multi-service orchestration (coming)
 - Kubernetes deployment with Helm and HPA (coming)
 
+- NATS subject matching (`*` one token, `>` one or more remaining tokens)
+- Queue groups (competing consumers) versus fan-out subscriptions
+- Ack/nack with bounded redelivery (poison messages drop after max attempts)
+- Shared broker client libraries (Go and TypeScript) over one routing catalog
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
 - API gateway in Go: REST `POST /v1/orders` validates the place-order contract and publishes `commands.place_order` to the broker
 - Orders service (TypeScript): consumes `commands.place_order`, persists, emits `events.order_created`
 
+- NATS subject matching (`*` one token, `>` one or more remaining tokens)
+- Queue groups (competing consumers) versus fan-out subscriptions
+- Ack/nack with bounded redelivery (poison messages drop after max attempts)
+- Shared broker client libraries (Go and TypeScript) over one routing catalog
+- Shared JSON Schema contracts and message envelope
+- Broker wiring (NATS or RabbitMQ) with a shared client lib per language: in-memory NATS-style bus in TypeScript (`src/broker.ts`) and Go (`services/gateway/broker`), plus a gateway `EnvelopePublisher` that JSON-encodes envelopes onto catalog routing keys
 ## Usage
 
 ```bash

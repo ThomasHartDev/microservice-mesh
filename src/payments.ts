@@ -212,27 +212,31 @@ export class PaymentsService {
     }
     const rec = this.store.getByOrder(req.order_id)
     if (!rec) return rejected('order_id', 'not_found')
-    if (rec.payment.status === 'failed' || rec.payment.status === 'charged') return this.finishExisting(rec)
+    if (rec.payment.status === 'failed') {
+      if (!rec.event) return rejected('event', 'missing')
+      return { kind: 'failed', payment: rec.payment, event: rec.event }
+    }
+    if (rec.payment.status === 'charged') return this.finishExisting(rec)
     if (rec.payment.status !== 'reserved') return rejected('status', 'not_reserved')
     if (this.failNext === 'capture') {
       this.failNext = null
       return rejected('processor', 'processor_error')
     }
+    const event = this.envelope(
+      'events.payment_charged',
+      {
+        order_id: rec.payment.order_id, payment_id: rec.payment.payment_id,
+        amount_cents: rec.payment.reserved_cents, currency: rec.payment.currency,
+      },
+      rec.payment.correlation_id, req.causation_id, this.clock.now().toISOString(),
+    )
+    if (!event.ok) return event.outcome
     if (!this.store.capture(rec.payment.customer_id, rec.payment.reserved_cents)) {
       return rejected('ledger', 'hold_missing')
     }
     rec.payment.status = 'charged'
     rec.payment.captured_cents = rec.payment.reserved_cents
     rec.payment.charge_key = req.idempotency_key
-    const event = this.envelope(
-      'events.payment_charged',
-      {
-        order_id: rec.payment.order_id, payment_id: rec.payment.payment_id,
-        amount_cents: rec.payment.captured_cents, currency: rec.payment.currency,
-      },
-      rec.payment.correlation_id, req.causation_id, this.clock.now().toISOString(),
-    )
-    if (!event.ok) return event.outcome
     rec.event = event.envelope
     this.store.put(rec)
     const failed = await this.tryPublish(rec)

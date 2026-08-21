@@ -165,4 +165,67 @@ describe('PaymentsService', () => {
     if (other.kind === 'reserved') expect(other.payment.payment_id).toBe(D)
     expect(next.store.all()).toHaveLength(2)
   })
+
+  it('charges a failed reserve as failed, not duplicate, and leaves the hold at 0', async () => {
+    const { store, pay } = svc([C, D], 100)
+    const failed = await pay.reserve(req())
+    expect(failed.kind).toBe('failed')
+    if (failed.kind !== 'failed') return
+    const charged = await pay.charge({ order_id: B, idempotency_key: 'charge-1' })
+    expect(charged.kind).toBe('failed')
+    expect(charged.kind).not.toBe('duplicate')
+    if (charged.kind !== 'failed') return
+    expect(charged.payment.reason).toBe('insufficient_funds')
+    expect(charged.event.message_id).toBe(failed.event.message_id)
+    expect(store.ledger(A).held_cents).toBe(0)
+    expect(store.getByOrder(B)?.payment.status).toBe('failed')
+  })
+
+  it('conflicts when the same charge key is reused for a different order', async () => {
+    const { pay } = svc([C, D, F])
+    expect((await pay.reserve(req())).kind).toBe('reserved')
+    expect((await pay.reserve(req({ order_id: E, key: 'reserve-2' }))).kind).toBe('reserved')
+    expect((await pay.charge({ order_id: B, idempotency_key: 'charge-1' })).kind).toBe('charged')
+    const clash = await pay.charge({ order_id: E, idempotency_key: 'charge-1' })
+    expect(clash.kind).toBe('conflict')
+    if (clash.kind === 'conflict') expect(clash.payment.order_id).toBe(B)
+  })
+
+  it('republishes the original payment_failed envelope after a broker outage', async () => {
+    const { store, publisher, pay } = svc([C, D], 100)
+    publisher.fail = new Error('down')
+    const first = await pay.reserve(req())
+    expect(first.kind).toBe('publish_failed')
+    if (first.kind !== 'publish_failed') return
+    expect(store.getById(C)?.published).toBe(false)
+    expect(publisher.events).toHaveLength(0)
+    expect(parseEnvelope(first.event).ok).toBe(true)
+    expect(first.event.type).toBe('events.payment_failed')
+    publisher.fail = null
+    const second = await pay.reserve(req())
+    expect(second.kind).toBe('replayed')
+    if (second.kind !== 'replayed') return
+    expect(second.event.message_id).toBe(D)
+    expect(second.event).toBe(first.event)
+    expect(parseEnvelope(second.event).ok).toBe(true)
+    expect(publisher.events).toHaveLength(1)
+    expect(publisher.events[0]?.routingKey).toBe(PAYMENT_FAILED_ROUTING_KEY)
+    expect(publisher.events[0]?.envelope.message_id).toBe(D)
+    expect(store.unpublished()).toHaveLength(0)
+  })
+
+  it('leaves the hold reserved when charge envelope construction fails', async () => {
+    const { store, pay } = svc()
+    expect((await pay.reserve(req())).kind).toBe('reserved')
+    const rec = store.getByOrder(B)
+    if (!rec) throw new Error('missing reserve')
+    rec.payment.correlation_id = 'not-a-uuid'
+    const charged = await pay.charge({ order_id: B, idempotency_key: 'charge-1', causation_id: E })
+    expect(charged.kind).toBe('rejected')
+    expect(store.getByOrder(B)?.payment.status).toBe('reserved')
+    expect(store.getByOrder(B)?.payment.captured_cents).toBe(0)
+    expect(store.getByOrder(B)?.payment.charge_key).toBeUndefined()
+    expect(store.ledger(A)).toEqual({ customer_id: A, available_cents: 7000, held_cents: 3000 })
+    expect(store.getByOrder(B)?.event).toBeNull()
+  })
 })

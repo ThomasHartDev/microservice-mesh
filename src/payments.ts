@@ -139,6 +139,11 @@ export class MemoryPaymentStore {
     if (rec.payment.charge_key) this.byCharge.set(rec.payment.charge_key, rec)
   }
 
+  bindCharge(key: string, rec: PaymentRecord): void {
+    this.byCharge.set(key, rec)
+    if (!rec.payment.charge_key) rec.payment.charge_key = key
+  }
+
   unpublished() { return [...this.byId.values()].filter((r) => r.event && !r.published) }
   all() { return [...this.byId.values()].map((r) => r.payment) }
 }
@@ -208,15 +213,19 @@ export class PaymentsService {
     const byCharge = this.store.getByChargeKey(req.idempotency_key)
     if (byCharge) {
       if (byCharge.payment.order_id !== req.order_id) return { kind: 'conflict', payment: byCharge.payment }
+      if (byCharge.payment.status === 'failed') return this.finishFailedCharge(byCharge)
       return this.finishExisting(byCharge)
     }
     const rec = this.store.getByOrder(req.order_id)
     if (!rec) return rejected('order_id', 'not_found')
     if (rec.payment.status === 'failed') {
-      if (!rec.event) return rejected('event', 'missing')
-      return { kind: 'failed', payment: rec.payment, event: rec.event }
+      this.store.bindCharge(req.idempotency_key, rec)
+      return this.finishFailedCharge(rec)
     }
-    if (rec.payment.status === 'charged') return this.finishExisting(rec)
+    if (rec.payment.status === 'charged') {
+      this.store.bindCharge(req.idempotency_key, rec)
+      return this.finishExisting(rec)
+    }
     if (rec.payment.status !== 'reserved') return rejected('status', 'not_reserved')
     if (this.failNext === 'capture') {
       this.failNext = null
@@ -236,12 +245,21 @@ export class PaymentsService {
     }
     rec.payment.status = 'charged'
     rec.payment.captured_cents = rec.payment.reserved_cents
-    rec.payment.charge_key = req.idempotency_key
     rec.event = event.envelope
+    this.store.bindCharge(req.idempotency_key, rec)
     this.store.put(rec)
     const failed = await this.tryPublish(rec)
     if (failed) return failed
     return { kind: 'charged', payment: rec.payment, event: event.envelope }
+  }
+
+  private async finishFailedCharge(rec: PaymentRecord): Promise<Outcome> {
+    if (!rec.event) return rejected('event', 'missing')
+    if (!rec.published) {
+      const failed = await this.tryPublish(rec)
+      if (failed) return failed
+    }
+    return { kind: 'failed', payment: rec.payment, event: rec.event }
   }
 
   private async failReserve(

@@ -191,6 +191,35 @@ describe('PaymentsService', () => {
     if (clash.kind === 'conflict') expect(clash.payment.order_id).toBe(B)
   })
 
+  it('occupies a charge key used against a failed payment so a later order cannot reuse it', async () => {
+    const { store, pay } = svc([C, D, F], 100)
+    const failed = await pay.reserve(req())
+    expect(failed.kind).toBe('failed')
+    const first = await pay.charge({ order_id: B, idempotency_key: 'charge-k' })
+    expect(first.kind).toBe('failed')
+    if (first.kind === 'failed') expect(first.payment.order_id).toBe(B)
+    const retry = await pay.charge({ order_id: B, idempotency_key: 'charge-k' })
+    expect(retry.kind).toBe('failed')
+    expect(retry.kind).not.toBe('duplicate')
+    store.credit(A, 50_000)
+    expect((await pay.reserve(req({ order_id: E, key: 'reserve-2' }))).kind).toBe('reserved')
+    const reuse = await pay.charge({ order_id: E, idempotency_key: 'charge-k' })
+    expect(reuse.kind).toBe('conflict')
+    if (reuse.kind === 'conflict') expect(reuse.payment.order_id).toBe(B)
+  })
+
+  it('occupies a second charge key on an already captured payment so another order cannot reuse it', async () => {
+    const { pay } = svc([C, D, F])
+    expect((await pay.reserve(req())).kind).toBe('reserved')
+    expect((await pay.charge({ order_id: B, idempotency_key: 'charge-1' })).kind).toBe('charged')
+    const secondKey = await pay.charge({ order_id: B, idempotency_key: 'charge-2' })
+    expect(secondKey.kind).toBe('duplicate')
+    expect((await pay.reserve(req({ order_id: E, key: 'reserve-2' }))).kind).toBe('reserved')
+    const reuse = await pay.charge({ order_id: E, idempotency_key: 'charge-2' })
+    expect(reuse.kind).toBe('conflict')
+    if (reuse.kind === 'conflict') expect(reuse.payment.order_id).toBe(B)
+  })
+
   it('republishes the original payment_failed envelope after a broker outage', async () => {
     const { store, publisher, pay } = svc([C, D], 100)
     publisher.fail = new Error('down')
@@ -211,6 +240,29 @@ describe('PaymentsService', () => {
     expect(publisher.events).toHaveLength(1)
     expect(publisher.events[0]?.routingKey).toBe(PAYMENT_FAILED_ROUTING_KEY)
     expect(publisher.events[0]?.envelope.message_id).toBe(D)
+    expect(store.unpublished()).toHaveLength(0)
+  })
+
+  it('charges an unpublished failed payment by republishing the original envelope', async () => {
+    const { store, publisher, pay } = svc([C, D], 100)
+    publisher.fail = new Error('down')
+    const first = await pay.reserve(req())
+    expect(first.kind).toBe('publish_failed')
+    if (first.kind !== 'publish_failed') return
+    expect(store.unpublished()).toHaveLength(1)
+    expect(publisher.events).toHaveLength(0)
+    publisher.fail = null
+    const charged = await pay.charge({ order_id: B, idempotency_key: 'charge-1' })
+    expect(charged.kind).toBe('failed')
+    expect(charged.kind).not.toBe('publish_failed')
+    if (charged.kind !== 'failed') return
+    expect(charged.event.message_id).toBe(first.event.message_id)
+    expect(parseEnvelope(charged.event).ok).toBe(true)
+    expect(charged.event.type).toBe('events.payment_failed')
+    expect(publisher.events).toHaveLength(1)
+    expect(publisher.events[0]?.routingKey).toBe(PAYMENT_FAILED_ROUTING_KEY)
+    expect(publisher.events[0]?.envelope.message_id).toBe(D)
+    expect(store.getById(C)?.published).toBe(true)
     expect(store.unpublished()).toHaveLength(0)
   })
 

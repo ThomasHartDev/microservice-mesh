@@ -55,6 +55,8 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Cancel tombstone so a late `order_created` cannot hold stock after compensate
 - Serialized critical section for last-unit races
 - Transactional outbox for `events.inventory_reserved` and `events.inventory_reservation_failed`
+- Retry until publish succeeds for `events.inventory_reserved` and `events.inventory_reservation_failed`
+
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -95,6 +97,7 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Serialized critical section for last-unit races
 - Transactional outbox for `events.inventory_reserved` and `events.inventory_reservation_failed`
 - Inventory service: reserve stock, handle oversell with compensation
+- Retry until publish succeeds for `events.inventory_reserved` and `events.inventory_reservation_failed`
 ## Usage
 
 ```bash

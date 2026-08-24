@@ -44,10 +44,10 @@ function created(payload: JsonObject, messageId: string, source: 'orders' | 'gat
   return built.envelope
 }
 
-function cancelled(orderId: string, messageId: string) {
+function cancelled(orderId: string, messageId: string, compensations: string[] = ['release_inventory']) {
   const built = createEnvelope({
     type: 'events.order_cancelled', source: 'orders',
-    payload: { order_id: orderId, reason: 'payment_failed', compensations: ['release_inventory'] },
+    payload: { order_id: orderId, reason: 'payment_failed', compensations },
     correlation_id: B, message_id: messageId, occurred_at: AT,
   })
   if (!built.ok || !built.envelope) throw new Error('fixture')
@@ -153,6 +153,48 @@ describe('InventoryService', () => {
     const clash = await svc.handle(created(orderPayload({ items: [{ sku: 'SKU-1', quantity: 1, unit_price_cents: 1 }] }), E))
     expect(clash.kind).toBe('conflict')
     expect(publisher.events).toHaveLength(1)
+  })
+
+  it('unholds stock when the outgoing envelope is invalid after hold', async () => {
+    const { store, publisher, svc } = service(10, [C, 'not-a-uuid'])
+    const out = await svc.handle(created(orderPayload(), A))
+    expect(out.kind).toBe('rejected')
+    expect(store.lot('SKU-1', 'wh-east')!.reserved).toBe(0)
+    expect(available(store.lot('SKU-1', 'wh-east')!)).toBe(10)
+    expect(store.all()).toHaveLength(0)
+    expect(publisher.events).toHaveLength(0)
+  })
+
+  it('rejects cancel without release_inventory and still allows a later reserve', async () => {
+    const { store, publisher, svc } = service()
+    expect((await svc.handle(cancelled(A, E, ['notify_customer', 'refund_payment']))).kind).toBe('rejected')
+    expect(store.lot('SKU-1', 'wh-east')!.reserved).toBe(0)
+    expect(store.all()).toHaveLength(0)
+    expect((await svc.handle(created(orderPayload(), A))).kind).toBe('reserved')
+    expect(store.lot('SKU-1', 'wh-east')!.reserved).toBe(2)
+    expect((await svc.handle(cancelled(A, F, ['notify_customer']))).kind).toBe('rejected')
+    expect(store.lot('SKU-1', 'wh-east')!.reserved).toBe(2)
+    expect(store.all()[0]?.status).toBe('reserved')
+    expect(publisher.events).toHaveLength(1)
+  })
+
+  it('replays an unpublished reservation-failed event once, then duplicates', async () => {
+    const { store, publisher, svc } = service(1, [C, D])
+    const cmd = created(orderPayload(), A)
+    publisher.fail = new Error('down')
+    expect((await svc.handle(cmd)).kind).toBe('publish_failed')
+    expect(store.lot('SKU-1', 'wh-east')!.reserved).toBe(0)
+    expect(store.all()[0]?.status).toBe('failed')
+    publisher.fail = null
+    const replay = await svc.handle(cmd)
+    expect(replay.kind).toBe('replayed')
+    if (replay.kind === 'replayed') {
+      expect(replay.event.message_id).toBe(D)
+      expect(replay.event.type).toBe('events.inventory_reservation_failed')
+    }
+    expect((await svc.handle(cmd)).kind).toBe('duplicate')
+    expect(publisher.events).toHaveLength(1)
+    expect(publisher.events[0]?.routingKey).toBe(INVENTORY_FAILED_ROUTING_KEY)
   })
 
   it('rejects bad envelopes, overflow, empty SKU sums, and bad seed', async () => {

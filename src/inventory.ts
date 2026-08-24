@@ -210,15 +210,14 @@ export class InventoryService {
   private async releaseLocked(env: MessageEnvelope): Promise<Outcome> {
     const body = asCancel(env.payload)
     if (!body) return rejected('payload', 'shape')
-    this.store.markCancelled(body.order_id)
     if (!body.compensations.includes('release_inventory')) {
-      const existing = this.store.getByOrder(body.order_id)
-      return existing
-        ? { kind: 'duplicate', reservation: existing.reservation, event: existing.event ?? undefined }
-        : rejected('compensations', 'release_inventory')
+      return rejected('compensations', 'release_inventory')
     }
     const rec = this.store.getByOrder(body.order_id)
-    if (!rec) return this.tombstone(env, body.order_id, '')
+    if (!rec) {
+      this.store.markCancelled(body.order_id)
+      return this.tombstone(env, body.order_id, '')
+    }
     if (rec.reservation.status === 'released') {
       return { kind: 'duplicate', reservation: rec.reservation, event: rec.event ?? undefined }
     }
@@ -228,6 +227,7 @@ export class InventoryService {
       }
     }
     rec.reservation.status = 'released'
+    this.store.markCancelled(body.order_id)
     this.store.put(rec)
     return { kind: 'released', reservation: rec.reservation }
   }
@@ -269,6 +269,7 @@ export class InventoryService {
       message_id: this.clock.newId(), causation_id: env.message_id, occurred_at: createdAt,
     })
     if (!built.ok || !built.envelope) {
+      for (const h of items) this.store.unhold(h.sku, h.warehouse_id, h.quantity)
       return { kind: 'rejected', errors: built.ok ? [{ path: '$', message: 'envelope' }] : built.errors }
     }
     const rec: RecordRow = { reservation, request_hash: hash, event: built.envelope, published: false }
@@ -287,13 +288,9 @@ export class InventoryService {
     if (!rec.published) {
       const failed = await this.tryPublish(rec)
       if (failed) return failed
-      if (rec.reservation.status !== 'failed') {
-        return { kind: 'replayed', reservation: rec.reservation, event: rec.event }
-      }
+      return { kind: 'replayed', reservation: rec.reservation, event: rec.event }
     }
-    return rec.reservation.status === 'failed'
-      ? { kind: 'failed', reservation: rec.reservation, event: rec.event }
-      : { kind: 'duplicate', reservation: rec.reservation, event: rec.event }
+    return { kind: 'duplicate', reservation: rec.reservation, event: rec.event }
   }
 
   private async tryPublish(rec: RecordRow): Promise<Extract<Outcome, { kind: 'publish_failed' }> | null> {

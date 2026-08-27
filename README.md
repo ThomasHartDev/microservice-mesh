@@ -57,6 +57,10 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Transactional outbox for `events.inventory_reserved` and `events.inventory_reservation_failed`
 - Retry until publish succeeds for `events.inventory_reserved` and `events.inventory_reservation_failed`
 
+- Saga orchestration (process manager) for the order flow
+- Compensating transactions in LIFO order of completed forward steps
+- Out-of-order reply buffering when participants race
+- Write-ahead terminal decision with idempotent publish retry
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -98,6 +102,11 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Transactional outbox for `events.inventory_reserved` and `events.inventory_reservation_failed`
 - Inventory service: reserve stock, handle oversell with compensation
 - Retry until publish succeeds for `events.inventory_reserved` and `events.inventory_reservation_failed`
+- Saga orchestration (process manager) for the order flow
+- Compensating transactions in LIFO order of completed forward steps
+- Out-of-order reply buffering when participants race
+- Write-ahead terminal decision with idempotent publish retry
+- Saga/orchestration for the order flow with compensating actions on failure
 ## Usage
 
 ```bash

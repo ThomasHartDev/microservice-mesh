@@ -152,13 +152,19 @@ export class OrderSagaOrchestrator {
       return { kind: 'conflict', saga }
     }
     if (saga.status === 'cancelled') return this.lateEffect(saga, env)
-    if (saga.parked !== undefined || saga.payment_id !== undefined) return { kind: 'conflict', saga }
     if (env.type === 'events.payment_failed') {
+      if (saga.parked?.outcome === 'charged' || saga.payment_id !== undefined) {
+        return { kind: 'awaiting', saga }
+      }
+      if (saga.parked !== undefined) return { kind: 'conflict', saga }
       if (saga.status === 'awaiting_inventory') {
         saga.parked = { outcome: 'failed' }
         return { kind: 'awaiting', saga }
       }
       return this.emitCancel(saga, env, 'payment_failed')
+    }
+    if (saga.parked?.outcome === 'charged' || saga.payment_id !== undefined) {
+      return { kind: 'conflict', saga }
     }
     const payment_id = env.payload['payment_id']
     const amount_cents = env.payload['amount_cents']
@@ -194,15 +200,28 @@ export class OrderSagaOrchestrator {
       const payment_id = env.payload['payment_id']
       if (typeof payment_id !== 'string') return reject('payload.payment_id', 'required')
       saga.payment_id = payment_id
-      return this.emitCancel(saga, env, saga.cancel_reason ?? 'payment_failed')
+      saga.parked = undefined
+      return this.emitLateWork(saga, env, 'refund_payment')
     }
     if (env.type === 'events.inventory_reserved' && saga.reservation_id === undefined) {
       const reservation_id = env.payload['reservation_id']
       if (typeof reservation_id !== 'string') return reject('payload.reservation_id', 'required')
       saga.reservation_id = reservation_id
-      return this.emitCancel(saga, env, saga.cancel_reason ?? 'inventory_failed')
+      return this.emitLateWork(saga, env, 'release_inventory')
     }
     return { kind: 'duplicate', saga, event: saga.terminal }
+  }
+  private emitLateWork(saga: SagaInstance, cause: MessageEnvelope, step: Compensation): Promise<Outcome> {
+    const reason = saga.cancel_reason ?? (step === 'refund_payment' ? 'payment_failed' : 'inventory_failed')
+    if (!saga.published || !saga.terminal) {
+      return this.emitCancel(saga, cause, reason)
+    }
+    saga.compensations = [step]
+    return this.publishTerminal(saga, cause, {
+      type: 'events.order_cancelled',
+      payload: { order_id: saga.order_id, reason, compensations: [step] },
+      ok: 'cancelled',
+    })
   }
   private emitComplete(saga: SagaInstance, cause: MessageEnvelope): Promise<Outcome> {
     if (!saga.reservation_id || !saga.payment_id) return Promise.resolve(reject('$', 'incomplete'))

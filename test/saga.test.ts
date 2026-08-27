@@ -18,6 +18,7 @@ const E = '6ba7b813-9dad-11d1-80b4-00c04fd430c8'
 const F = '6ba7b814-9dad-11d1-80b4-00c04fd430c8'
 const G = '6ba7b815-9dad-11d1-80b4-00c04fd430c8'
 const H = '6ba7b816-9dad-11d1-80b4-00c04fd430c8'
+const I = '6ba7b817-9dad-11d1-80b4-00c04fd430c8'
 const AT = '2026-08-27T18:00:00.000Z'
 const items = [{ sku: 'SKU-1', quantity: 2, unit_price_cents: 1500 }]
 
@@ -142,16 +143,94 @@ describe('OrderSagaOrchestrator', () => {
   })
 
   it('refunds a late charge after inventory already cancelled the saga', async () => {
-    const { svc } = orch([E, H])
+    const { publisher, svc } = orch([E, H])
     await svc.handle(created())
     const first = await svc.handle(invFailed(F))
     expect(first.kind).toBe('cancelled')
+    if (first.kind !== 'cancelled') return
+    expect(first.event.payload['compensations']).toEqual(['notify_customer'])
     const late = await svc.handle(charged(G))
     expect(late.kind).toBe('cancelled')
     if (late.kind !== 'cancelled') return
-    expect(late.saga.compensations).toEqual(['refund_payment', 'notify_customer'])
+    expect(late.saga.payment_id).toBe(D)
     expect(late.event.causation_id).toBe(G)
     expect(late.event.message_id).toBe(H)
+    expect(late.event.payload['reason']).toBe('inventory_failed')
+    expect(late.event.payload['compensations']).toEqual(['refund_payment'])
+    expect(publisher.events).toHaveLength(2)
+    expect(publisher.events[1]?.envelope.payload['compensations']).toEqual(['refund_payment'])
+  })
+
+  it('refunds a late charge after reserve then payment failed without re-releasing stock', async () => {
+    const { publisher, svc } = orch([E, H])
+    await svc.handle(created())
+    await svc.handle(reserved(F))
+    const first = await svc.handle(payFailed(G))
+    expect(first.kind).toBe('cancelled')
+    if (first.kind !== 'cancelled') return
+    expect(first.event.payload['compensations']).toEqual(['release_inventory', 'notify_customer'])
+    const late = await svc.handle(charged(I))
+    expect(late.kind).toBe('cancelled')
+    if (late.kind !== 'cancelled') return
+    expect(late.saga.payment_id).toBe(D)
+    expect(late.event.payload['reason']).toBe('payment_failed')
+    expect(late.event.payload['compensations']).toEqual(['refund_payment'])
+    expect(publisher.events).toHaveLength(2)
+    expect(publisher.events.map((e) => e.envelope.payload['compensations'])).toEqual([
+      ['release_inventory', 'notify_customer'],
+      ['refund_payment'],
+    ])
+  })
+
+  it('completes when a parked payment failure is overwritten by a later charge, then stock is held', async () => {
+    const { svc } = orch()
+    await svc.handle(created())
+    const failed = await svc.handle(payFailed(F))
+    expect(failed.kind).toBe('awaiting')
+    if (failed.kind !== 'awaiting') return
+    expect(failed.saga.parked).toEqual({ outcome: 'failed' })
+    const capture = await svc.handle(charged(G))
+    expect(capture.kind).toBe('awaiting')
+    if (capture.kind !== 'awaiting') return
+    expect(capture.saga.parked).toEqual({
+      outcome: 'charged', payment_id: D, amount_cents: 3000, currency: 'USD',
+    })
+    const out = await svc.handle(reserved(H))
+    expect(out.kind).toBe('completed')
+    if (out.kind !== 'completed') return
+    expect(out.saga.payment_id).toBe(D)
+    expect(out.event.payload['payment_id']).toBe(D)
+  })
+
+  it('ignores a stale payment failure after a parked charge and still completes on reserve', async () => {
+    const { svc } = orch()
+    await svc.handle(created())
+    const parked = await svc.handle(charged(F))
+    expect(parked.kind).toBe('awaiting')
+    const stale = await svc.handle(payFailed(G))
+    expect(stale.kind).toBe('awaiting')
+    if (stale.kind !== 'awaiting') return
+    expect(stale.saga.parked).toMatchObject({ outcome: 'charged', payment_id: D })
+    const out = await svc.handle(reserved(H))
+    expect(out.kind).toBe('completed')
+    if (out.kind !== 'completed') return
+    expect(out.saga.payment_id).toBe(D)
+  })
+
+  it('cancels parked payment_failed once inventory is reserved', async () => {
+    const { publisher, svc } = orch()
+    await svc.handle(created())
+    const parked = await svc.handle(payFailed(F))
+    expect(parked.kind).toBe('awaiting')
+    if (parked.kind !== 'awaiting') return
+    expect(parked.saga.status).toBe('awaiting_inventory')
+    const out = await svc.handle(reserved(G))
+    expect(out.kind).toBe('cancelled')
+    if (out.kind !== 'cancelled') return
+    expect(out.saga.cancel_reason).toBe('payment_failed')
+    expect(out.event.payload['reason']).toBe('payment_failed')
+    expect(out.event.payload['compensations']).toEqual(['release_inventory', 'notify_customer'])
+    expect(publisher.events).toHaveLength(1)
   })
 
   it('replays unpublished terminals after broker failure', async () => {

@@ -32,6 +32,10 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Shared broker client libraries (Go and TypeScript) over one routing catalog
 - Shared broker client libraries (Go, TypeScript, and Python) over one routing catalog
 
+- Idempotent consumer (message-id dedupe under at-least-once redelivery)
+- Per-channel send state so a retry does not double-email
+- Transient versus permanent notification-provider failure
+- Poison-message rejection versus ignore of non-terminal types
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -46,6 +50,11 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Broker wiring (NATS or RabbitMQ) with a shared client lib per language: in-memory NATS-style bus in TypeScript (`src/broker.ts`) and Go (`services/gateway/broker`), plus a gateway `EnvelopePublisher` that JSON-encodes envelopes onto catalog routing keys
 - Shared broker client libraries (Go, TypeScript, and Python) over one routing catalog
 - In-memory NATS-style bus in TypeScript (`src/broker.ts`), Go (`services/gateway/broker`), and Python (`python/broker.py`). Token subjects, `*` / `>` matching, queue groups, and max-3 nack redelivery. There is no NATS or RabbitMQ client, connection, or compose service yet. The gateway `EnvelopePublisher` JSON-encodes envelopes onto catalog routing keys and any `Publish(subject, []byte)` backend.
+- Idempotent consumer (message-id dedupe under at-least-once redelivery)
+- Per-channel send state so a retry does not double-email
+- Transient versus permanent notification-provider failure
+- Poison-message rejection versus ignore of non-terminal types
+- Notifications worker in Python: consumes terminal events, sends (mock) email/SMS
 ## Usage
 
 ```bash

@@ -36,6 +36,9 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Per-channel send state so a retry does not double-email
 - Transient versus permanent notification-provider failure
 - Poison-message rejection versus ignore of non-terminal types
+- Poison-message rejection versus ignore of types the worker does not consume
+- Out-of-order join: park a terminal event until order_created maps the customer
+
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -55,6 +58,9 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Transient versus permanent notification-provider failure
 - Poison-message rejection versus ignore of non-terminal types
 - Notifications worker in Python: consumes terminal events, sends (mock) email/SMS
+- Poison-message rejection versus ignore of types the worker does not consume
+- Out-of-order join: park a terminal event until order_created maps the customer
+- Notifications worker in Python: consumes `events.order_created` plus terminal events, parks out-of-order terminals, sends (mock) email/SMS keyed by `customer_id`
 ## Usage
 
 ```bash

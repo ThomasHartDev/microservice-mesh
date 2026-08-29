@@ -16,9 +16,16 @@ SCHEMA = "1.0.0"
 SOURCES = frozenset({"gateway", "orders", "inventory", "payments", "notifications"})
 CANCEL_REASONS = frozenset({"inventory_failed", "payment_failed", "customer_cancelled"})
 COMPENSATIONS = frozenset({"release_inventory", "refund_payment", "notify_customer"})
-COMPLETED, CANCELLED = "events.order_completed", "events.order_cancelled"
+CURRENCIES = frozenset({"USD", "EUR", "GBP"})
+CREATED, COMPLETED, CANCELLED = (
+    "events.order_created",
+    "events.order_completed",
+    "events.order_cancelled",
+)
 TERMINAL = frozenset({COMPLETED, CANCELLED})
+CONSUMED = frozenset({CREATED, COMPLETED, CANCELLED})
 SHELL = ("message_id", "correlation_id", "type", "schema_version", "occurred_at", "source", "payload")
+ITEM_KEYS = ("sku", "quantity", "unit_price_cents")
 PAYLOADS = {
     COMPLETED: ("order_id", "payment_id", "reservation_id", "total_cents"),
     CANCELLED: ("order_id", "reason", "compensations"),
@@ -27,9 +34,6 @@ PAYLOADS = {
 
 class TransientError(Exception): pass
 class PermanentError(Exception): pass
-
-
-
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,9 @@ class Dispatch:
 class OrderView:
     order_id: str
     terminal: str | None = None
+    customer_id: str | None = None
+    parked: Envelope | None = None
+    dispatch: Dispatch | None = None
 
 
 @dataclass(frozen=True)
@@ -106,13 +113,13 @@ class MemoryDirectory:
         self._rows: dict[str, Contact] = {}
         self._lock = threading.Lock()
 
-    def put(self, order_id: str, contact: Contact) -> None:
+    def put(self, customer_id: str, contact: Contact) -> None:
         with self._lock:
-            self._rows[order_id] = contact
+            self._rows[customer_id] = contact
 
-    def lookup(self, order_id: str) -> Contact | None:
+    def lookup(self, customer_id: str) -> Contact | None:
         with self._lock:
-            return self._rows.get(order_id)
+            return self._rows.get(customer_id)
 
 
 class _Recorder:
@@ -162,6 +169,57 @@ def _fail(path: str, msg: str) -> tuple[None, tuple[FieldError, ...]]:
     return None, (FieldError(path, msg),)
 
 
+def _item(item: Any, index: int) -> FieldError | None:
+    base = f"payload.items[{index}]"
+    if not isinstance(item, dict):
+        return FieldError(base, "object")
+    for key in ITEM_KEYS:
+        if key not in item:
+            return FieldError(f"{base}.{key}", "required")
+    extra = next((k for k in item if k not in ITEM_KEYS), None)
+    if extra:
+        return FieldError(f"{base}.{extra}", "additional")
+    sku = item["sku"]
+    if not isinstance(sku, str) or not sku:
+        return FieldError(f"{base}.sku", "minLength")
+    qty = item["quantity"]
+    if not _int(qty) or qty <= 0:
+        return FieldError(f"{base}.quantity", "integer")
+    price = item["unit_price_cents"]
+    if not _int(price) or price < 0:
+        return FieldError(f"{base}.unit_price_cents", "integer")
+    return None
+
+
+def _created_payload(payload: Any) -> FieldError | None:
+    keys = ("order_id", "customer_id", "items", "currency", "total_cents")
+    if not isinstance(payload, dict):
+        return FieldError("payload", "object")
+    for key in keys:
+        if key not in payload:
+            return FieldError(f"payload.{key}", "required")
+    extra = next((k for k in payload if k not in keys), None)
+    if extra:
+        return FieldError(f"payload.{extra}", "additional")
+    if not _uuid(payload["order_id"]):
+        return FieldError("payload.order_id", "uuid")
+    if not _uuid(payload["customer_id"]):
+        return FieldError("payload.customer_id", "uuid")
+    items = payload["items"]
+    if not isinstance(items, list) or len(items) < 1:
+        return FieldError("payload.items", "minItems")
+    for index, item in enumerate(items):
+        bad = _item(item, index)
+        if bad:
+            return bad
+    if payload["currency"] not in CURRENCIES:
+        return FieldError("payload.currency", "enum")
+    cents = payload["total_cents"]
+    if not _int(cents) or cents < 0:
+        return FieldError("payload.total_cents", "integer")
+    return None
+
+
 def _payload(typ: str, payload: Any) -> FieldError | None:
     keys = PAYLOADS[typ]
     if not isinstance(payload, dict):
@@ -207,6 +265,8 @@ def parse_envelope(raw: Any) -> tuple[Envelope | None, tuple[FieldError, ...]]:
     at, src, payload = raw["occurred_at"], raw["source"], raw["payload"]
     if not _uuid(mid) or not _uuid(cid):
         return _fail("message_id" if not _uuid(mid) else "correlation_id", "uuid")
+    if "causation_id" in raw and not _uuid(raw["causation_id"]):
+        return _fail("causation_id", "uuid")
     if not isinstance(typ, str) or not typ:
         return _fail("type", "minLength 1")
     if not isinstance(ver, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", ver):
@@ -221,13 +281,13 @@ def parse_envelope(raw: Any) -> tuple[Envelope | None, tuple[FieldError, ...]]:
         return _fail("source", "enum")
     if not isinstance(payload, dict):
         return _fail("payload", "object")
-    if typ not in TERMINAL:
+    if typ not in CONSUMED:
         return Envelope(mid, cid, typ, ver, at, src, payload), ()
     if ver != SCHEMA:
         return _fail("schema_version", f"expected {SCHEMA}, got {ver}")
     if src != "orders":
         return _fail("source", "expected orders")
-    bad = _payload(typ, payload)
+    bad = _created_payload(payload) if typ == CREATED else _payload(typ, payload)
     return (None, (bad,)) if bad else (Envelope(mid, cid, typ, ver, at, src, payload), ())
 
 
@@ -248,7 +308,7 @@ class Worker:
         env, errors = parse_envelope(raw)
         if errors or env is None:
             return Outcome("rejected", errors=errors)
-        if env.type not in TERMINAL:
+        if env.type not in CONSUMED:
             return Outcome("ignored")
         oid = str(env.payload["order_id"])
         with self.store.lock_for(oid):
@@ -262,10 +322,41 @@ class Worker:
         if view is None:
             view = OrderView(oid)
             self.store.orders[oid] = view
+        if env.type == CREATED:
+            return self._on_created(env, view)
+        if view.terminal is not None:
+            return Outcome("conflict", order_id=oid)
+        if view.customer_id is None:
+            return self._park(env, view)
+        return self._dispatch_terminal(env, view)
+
+    def _on_created(self, env: Envelope, view: OrderView) -> Outcome:
+        cid = str(env.payload["customer_id"])
+        if view.customer_id is None:
+            view.customer_id = cid
+        elif view.customer_id != cid:
+            return Outcome("conflict", order_id=view.order_id)
+        if view.parked is not None:
+            parked = view.parked
+            view.parked = None
+            return self._dispatch_terminal(parked, view)
+        if view.dispatch is not None:
+            return self._send(view.dispatch, True)
+        return Outcome("ok", order_id=view.order_id)
+
+    def _park(self, env: Envelope, view: OrderView) -> Outcome:
+        if view.parked is None:
+            view.parked = env
+        elif view.parked.message_id != env.message_id:
+            return Outcome("conflict", order_id=view.order_id)
+        return Outcome("parked", order_id=view.order_id)
+
+    def _dispatch_terminal(self, env: Envelope, view: OrderView) -> Outcome:
+        oid = view.order_id
         kind = "completed" if env.type == COMPLETED else "cancelled"
         if view.terminal is not None:
             return Outcome("conflict", order_id=oid)
-        contact = self.directory.lookup(oid)
+        contact = self.directory.lookup(view.customer_id) if view.customer_id else None
         notify = kind != "cancelled" or "notify_customer" in list(env.payload.get("compensations") or [])
         email_to = contact.email if notify and contact and contact.email else None
         phone_to = contact.phone if notify and kind == "completed" and contact and contact.phone else None
@@ -283,6 +374,7 @@ class Worker:
             email_to, phone_to, self.new_id(), env.correlation_id, subject, email_body, sms_body,
         )
         self.store.by_message[env.message_id] = dispatch
+        view.dispatch = dispatch
         view.terminal = kind
         return self._send(dispatch, False)
 
@@ -298,7 +390,7 @@ class Worker:
                 sent_now += 1
             except TransientError:
                 return Outcome("retry", dispatch=dispatch, order_id=dispatch.order_id)
-            except PermanentError:
+            except (PermanentError, Exception):
                 dispatch.channels["email"] = "failed"
         if dispatch.channels.get("sms") == "pending" and dispatch.phone_to:
             try:
@@ -307,7 +399,7 @@ class Worker:
                 sent_now += 1
             except TransientError:
                 return Outcome("retry", dispatch=dispatch, order_id=dispatch.order_id)
-            except PermanentError:
+            except (PermanentError, Exception):
                 dispatch.channels["sms"] = "failed"
         if "pending" in dispatch.channels.values():
             return Outcome("retry", dispatch=dispatch, order_id=dispatch.order_id)

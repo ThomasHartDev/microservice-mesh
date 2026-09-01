@@ -3,6 +3,6 @@
 *_test.go
 **/*_test.go
 *.md
-gateway
+/gateway
 cmd/gateway/gateway
 **/.DS_Store

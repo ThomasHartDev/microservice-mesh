@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   SERVICE_IMAGES,
@@ -27,6 +27,24 @@ const ignored = (text: string, path: string) => isDockerignored(path, parseDocke
 const codes = (src: string, language: 'go' | 'typescript' | 'python', http: boolean) =>
   checkImagePolicy(src, { language, http }).map((f) => f.code)
 
+function copyContextSources(args: string): string[] {
+  const tokens = args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []
+  const paths: string[] = []
+  for (const raw of tokens) {
+    const token = raw.replace(/^['"]|['"]$/g, '')
+    if (token === '--from' || token.startsWith('--from=')) return []
+    if (token.startsWith('--')) continue
+    paths.push(token)
+  }
+  return paths.slice(0, -1)
+}
+
+function contextPath(contextDir: string, src: string): string {
+  const cleaned = src.replace(/^\.\//, '')
+  if (cleaned === '' || cleaned === '.') return contextDir
+  return contextDir === '.' ? cleaned : `${contextDir}/${cleaned}`
+}
+
 describe('image catalog', () => {
   it('covers every mesh service with a Dockerfile on disk', () => {
     const names: ServiceName[] = ['gateway', 'orders', 'inventory', 'payments', 'notifications']
@@ -42,6 +60,20 @@ describe('image catalog', () => {
       expect(parsed.stages.at(-1)?.instructions.find((i) => i.keyword === 'USER')?.args).toMatch(/^65532/)
       if (img.service === 'gateway') expect(load(img.dockerfile)).not.toContain('MESH_SERVICE')
       else expect(load(img.dockerfile)).toContain(`MESH_SERVICE=${img.service}`)
+    }
+  })
+
+  it('COPY sources exist relative to each image build context', () => {
+    for (const img of SERVICE_IMAGES) {
+      const contextDir = img.context === 'service' ? img.dockerfile.replace(/\/Dockerfile$/, '') : '.'
+      const parsed = parseDockerfile(load(img.dockerfile))
+      const sources = parsed.instructions
+        .filter((i) => i.keyword === 'COPY')
+        .flatMap((i) => copyContextSources(i.args))
+      expect(sources.length).toBeGreaterThan(0)
+      for (const src of sources) {
+        expect(existsSync(contextPath(contextDir, src)), `${img.dockerfile} COPY ${src}`).toBe(true)
+      }
     }
   })
 })
@@ -118,5 +150,16 @@ describe('dockerignore matching', () => {
     expect(ignored(text, 'vendor/node_modules/pkg')).toBe(false)
     expect(ignored(text, 'src/index.js.map')).toBe(true)
     expect(ignored(text, 'lib/src/index.js.map')).toBe(false)
+  })
+
+  it('keeps gateway sources while ignoring the root binary, tests, and git', () => {
+    const text = load('services/gateway/.dockerignore')
+    expect(ignored(text, 'cmd/gateway/main.go')).toBe(false)
+    expect(ignored(text, 'gateway.go')).toBe(false)
+    expect(ignored(text, 'gateway')).toBe(true)
+    expect(ignored(text, 'cmd/gateway/gateway')).toBe(true)
+    expect(ignored(text, 'gateway_test.go')).toBe(true)
+    expect(ignored(text, '.git')).toBe(true)
+    expect(ignored(text, '.git/HEAD')).toBe(true)
   })
 })

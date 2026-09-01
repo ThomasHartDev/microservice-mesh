@@ -39,6 +39,10 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Poison-message rejection versus ignore of types the worker does not consume
 - Out-of-order join: park a terminal event until order_created maps the customer
 
+- Multi-stage container builds (build stage vs runtime stage)
+- Least-privilege containers (numeric non-root USER, distroless static Go binary)
+- Build-context filtering (.dockerignore last-match-wins glob, including negation)
+- Layer cache hygiene (copy manifests before source)
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -61,6 +65,11 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Poison-message rejection versus ignore of types the worker does not consume
 - Out-of-order join: park a terminal event until order_created maps the customer
 - Notifications worker in Python: consumes `events.order_created` plus terminal events, parks out-of-order terminals, sends (mock) email/SMS keyed by `customer_id`
+- Multi-stage container builds (build stage vs runtime stage)
+- Least-privilege containers (numeric non-root USER, distroless static Go binary)
+- Build-context filtering (.dockerignore last-match-wins glob, including negation)
+- Layer cache hygiene (copy manifests before source)
+- Dockerfile per service (multi-stage, non-root) + .dockerignore: Go gateway (distroless), TypeScript orders/payments/inventory, Python notifications worker. Image policy is enforced in tests.
 ## Usage
 
 ```bash

@@ -51,3 +51,19 @@ export {
   type Broker,
   type Delivery,
 } from './broker.js'
+
+export {
+  SERVICE_IMAGES,
+  checkDockerignore,
+  checkImagePolicy,
+  isDockerignored,
+  parseDockerfile,
+  parseDockerignore,
+  type Finding,
+  type IgnorePattern,
+  type Instruction,
+  type Language,
+  type ParsedDockerfile,
+  type ServiceImage,
+  type Stage,
+} from './images.js'

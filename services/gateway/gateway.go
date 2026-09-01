@@ -182,8 +182,15 @@ func New(pub Publisher) *Gateway {
 
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("POST /v1/orders", g.placeOrder)
 	return mux
+}
+
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 func (g *Gateway) placeOrder(w http.ResponseWriter, r *http.Request) {

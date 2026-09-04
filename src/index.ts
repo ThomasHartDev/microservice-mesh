@@ -19,3 +19,14 @@ export {
   type ValidationError,
   type ValidationResult,
 } from './contracts.js'
+
+export {
+  MemoryOrderStore,
+  MemoryPublisher,
+  ORDER_CREATED_ROUTING_KEY,
+  OrdersService,
+  defaultClock,
+  requestFingerprint,
+  totalCents,
+} from './orders.js'
+export type { Clock, Currency, HandleOutcome, LineItem, Order, OrderRecord, Publisher } from './orders.js'

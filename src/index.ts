@@ -90,3 +90,16 @@ export {
   aggregateLines,
   available,
 } from './inventory.js'
+
+export {
+  MemorySagaStore,
+  ORDER_CANCELLED_ROUTING_KEY,
+  ORDER_COMPLETED_ROUTING_KEY,
+  OrderSagaOrchestrator,
+  compensationsFor,
+} from './saga.js'
+
+export type {
+  Compensation,
+  SagaInstance,
+} from './saga.js'

@@ -67,3 +67,17 @@ export {
   type ServiceImage,
   type Stage,
 } from './images.js'
+
+export {
+  MemoryPaymentStore,
+  PAYMENT_CHARGED_ROUTING_KEY,
+  PAYMENT_FAILED_ROUTING_KEY,
+  PaymentsService,
+  reserveFingerprint,
+} from './payments.js'
+
+export type {
+  Outcome,
+  Payment,
+  ReserveRequest,
+} from './payments.js'

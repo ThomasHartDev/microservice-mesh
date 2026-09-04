@@ -43,6 +43,12 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Least-privilege containers (numeric non-root USER, distroless static Go binary)
 - Build-context filtering (.dockerignore last-match-wins glob, including negation)
 - Layer cache hygiene (copy manifests before source)
+- Two-phase authorize/capture (reserve a ledger hold, then charge)
+- Stripe-style idempotency keys on reserve and charge (fingerprint replay vs conflict)
+- Retryable processor errors do not occupy the key; declines and insufficient funds do
+- Ledger available vs held cents, one payment intent per order
+- Transactional outbox for `events.payment_charged` and `events.payment_failed`
+
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -70,6 +76,12 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Build-context filtering (.dockerignore last-match-wins glob, including negation)
 - Layer cache hygiene (copy manifests before source)
 - Dockerfile per service (multi-stage, non-root) + .dockerignore: Go gateway (distroless), TypeScript orders/payments/inventory, Python notifications worker. Image policy is enforced in tests.
+- Two-phase authorize/capture (reserve a ledger hold, then charge)
+- Stripe-style idempotency keys on reserve and charge (fingerprint replay vs conflict)
+- Retryable processor errors do not occupy the key; declines and insufficient funds do
+- Ledger available vs held cents, one payment intent per order
+- Transactional outbox for `events.payment_charged` and `events.payment_failed`
+- Payments service: reserve/charge with idempotency keys, emits payment events
 ## Usage
 
 ```bash

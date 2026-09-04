@@ -49,6 +49,14 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Ledger available vs held cents, one payment intent per order
 - Transactional outbox for `events.payment_charged` and `events.payment_failed`
 
+- Compensating transactions (saga participant: reserve, then release)
+- All-or-nothing multi-SKU holds with in-section rollback on oversell
+- Pessimistic stock reservation (`on_hand` vs `reserved`, never `reserved > on_hand`)
+- Cancel tombstone so a late `order_created` cannot hold stock after compensate
+- Serialized critical section for last-unit races
+- Transactional outbox for `events.inventory_reserved` and `events.inventory_reservation_failed`
+- Retry until publish succeeds for `events.inventory_reserved` and `events.inventory_reservation_failed`
+
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -82,6 +90,14 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Ledger available vs held cents, one payment intent per order
 - Transactional outbox for `events.payment_charged` and `events.payment_failed`
 - Payments service: reserve/charge with idempotency keys, emits payment events
+- Compensating transactions (saga participant: reserve, then release)
+- All-or-nothing multi-SKU holds with in-section rollback on oversell
+- Pessimistic stock reservation (`on_hand` vs `reserved`, never `reserved > on_hand`)
+- Cancel tombstone so a late `order_created` cannot hold stock after compensate
+- Serialized critical section for last-unit races
+- Transactional outbox for `events.inventory_reserved` and `events.inventory_reservation_failed`
+- Inventory service: reserve stock, handle oversell with compensation
+- Retry until publish succeeds for `events.inventory_reserved` and `events.inventory_reservation_failed`
 ## Usage
 
 ```bash

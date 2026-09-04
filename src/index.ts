@@ -81,3 +81,12 @@ export type {
   Payment,
   ReserveRequest,
 } from './payments.js'
+
+export {
+  InventoryService,
+  INVENTORY_FAILED_ROUTING_KEY,
+  INVENTORY_RESERVED_ROUTING_KEY,
+  MemoryInventoryStore,
+  aggregateLines,
+  available,
+} from './inventory.js'

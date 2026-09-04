@@ -29,4 +29,25 @@ export {
   requestFingerprint,
   totalCents,
 } from './orders.js'
-export type { Clock, Currency, HandleOutcome, LineItem, Order, OrderRecord, Publisher } from './orders.js'
+
+export type {
+  Clock,
+  Currency,
+  HandleOutcome,
+  LineItem,
+  Order,
+  OrderRecord,
+  Publisher,
+} from './orders.js'
+
+export {
+  ClosedError,
+  MAX_DELIVER,
+  SubjectError,
+  createMemoryBroker,
+  matchSubject,
+  publishEnvelope,
+  validSubject,
+  type Broker,
+  type Delivery,
+} from './broker.js'

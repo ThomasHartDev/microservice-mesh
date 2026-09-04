@@ -57,7 +57,6 @@ export type MessageEnvelope = {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-// RFC 3339 date-time: full date + time + Z or numeric offset (not date-only / locale).
 const DATE_TIME_RE =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 
@@ -172,14 +171,13 @@ const envelopeSchema = o(
       type: 'string',
       enum: ['gateway', 'orders', 'inventory', 'payments', 'notifications'],
     },
-    // Catalog validates the body; the shell only requires an object.
     payload: { type: 'object', additionalProperties: true },
   },
 )
 
 const V1 = '1.0.0'
 const rows: Array<[MessageType, MessageKind, SchemaKey, string, ServiceName, ServiceName[]]> = [
-  ['commands.place_order', 'command', 'place_order', 'http.POST /v1/orders', 'gateway', ['orders']],
+  ['commands.place_order', 'command', 'place_order', 'commands.place_order', 'gateway', ['orders']],
   ['events.order_created', 'event', 'order_created', 'events.orders.created', 'orders', [
     'inventory', 'payments', 'notifications',
   ]],

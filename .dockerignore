@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+dist
+coverage
+test
+**/*.test.ts
+**/*_test.go
+**/*_test.py
+**/.DS_Store
+*.log
+.env
+.env.*
+!.env.example

@@ -68,6 +68,8 @@ export {
   type Stage,
 } from './images.js'
 
+export { checkComposePolicy, parseCompose, parseDurationMs, parseYaml, startupOrder, type ComposeFile } from './compose.js'
+
 export {
   MemoryPaymentStore,
   PAYMENT_CHARGED_ROUTING_KEY,

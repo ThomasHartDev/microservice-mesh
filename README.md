@@ -23,7 +23,9 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Message-broker integration (async commands and domain events)
 - Contract-first design (shared schemas across languages)
 - Polyglot service boundaries
-- Containerization and local multi-service orchestration (coming)
+- Health-gated Compose `depends_on` (`condition: service_healthy`) and a startup DAG
+- Readiness probes (`pg_isready`, NATS `/healthz`, `redis-cli PING`, distroless `CMD /app/gateway -health`)
+- Named volumes and a user-defined bridge network (Postgres and Redis unpublished)
 - Kubernetes deployment with Helm and HPA (coming)
 
 - NATS subject matching (`*` one token, `>` one or more remaining tokens)
@@ -74,7 +76,7 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Shared JSON Schema contracts and message envelope
 - Broker wiring (NATS or RabbitMQ) with a shared client lib per language: in-memory NATS-style bus in TypeScript (`src/broker.ts`) and Go (`services/gateway/broker`), plus a gateway `EnvelopePublisher` that JSON-encodes envelopes onto catalog routing keys
 - Shared broker client libraries (Go, TypeScript, and Python) over one routing catalog
-- In-memory NATS-style bus in TypeScript (`src/broker.ts`), Go (`services/gateway/broker`), and Python (`python/broker.py`). Token subjects, `*` / `>` matching, queue groups, and max-3 nack redelivery. There is no NATS or RabbitMQ client, connection, or compose service yet. The gateway `EnvelopePublisher` JSON-encodes envelopes onto catalog routing keys and any `Publish(subject, []byte)` backend.
+- In-memory NATS-style bus in TypeScript (`src/broker.ts`), Go (`services/gateway/broker`), and Python (`python/broker.py`). Token subjects, `*` / `>` matching, queue groups, and max-3 nack redelivery. Compose runs a real NATS JetStream service; the in-process clients have not switched to it yet. The gateway `EnvelopePublisher` JSON-encodes envelopes onto catalog routing keys and any `Publish(subject, []byte)` backend.
 - Idempotent consumer (message-id dedupe under at-least-once redelivery)
 - Per-channel send state so a retry does not double-email
 - Transient versus permanent notification-provider failure
@@ -88,6 +90,7 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Build-context filtering (.dockerignore last-match-wins glob, including negation)
 - Layer cache hygiene (copy manifests before source)
 - Dockerfile per service (multi-stage, non-root) + .dockerignore: Go gateway (distroless), TypeScript orders/payments/inventory, Python notifications worker. Image policy is enforced in tests.
+- docker-compose.yml running the whole mesh + broker + datastores with healthchecks
 - Two-phase authorize/capture (reserve a ledger hold, then charge)
 - Stripe-style idempotency keys on reserve and charge (fingerprint replay vs conflict)
 - Retryable processor errors do not occupy the key; declines and insufficient funds do
@@ -113,6 +116,7 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 pnpm install
 pnpm run typecheck
 pnpm test
+docker compose up --build
 ```
 
 `pnpm test` runs Vitest and `go test -race` for `services/gateway`. A valid `POST /v1/orders` returns `202` with `message_id` and `correlation_id`. Field errors return `400`. The same `idempotency_key` plus the same bytes replays the accept. A different body on that key returns `409`. Broker failure returns `503`.
@@ -125,7 +129,7 @@ cd services/gateway && go run ./cmd/gateway
 # {"customer_id":"550e8400-e29b-41d4-a716-446655440000","items":[{"sku":"SKU-1","quantity":2,"unit_price_cents":1500}],"currency":"USD","idempotency_key":"checkout-1"}
 ```
 
-Stdout is the published envelope until a real broker adapter lands.
+Stdout is the published envelope until a NATS adapter lands. `docker compose up --build` starts NATS JetStream, Postgres, Redis, and the five services on the `mesh` network. App containers wait on `service_healthy`. Postgres and Redis stay unpublished. Gateway is `localhost:8080`.
 
 ## License
 

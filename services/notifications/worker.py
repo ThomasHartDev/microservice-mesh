@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import threading
 import uuid
 from dataclasses import dataclass
@@ -410,3 +412,21 @@ class Worker:
         if all(v == "skipped" for v in dispatch.channels.values()):
             return Outcome("skipped", dispatch=dispatch, order_id=dispatch.order_id)
         return Outcome("failed", dispatch=dispatch, order_id=dispatch.order_id)
+
+
+def run_until_stop() -> None:
+    service = os.environ.get("MESH_SERVICE", "notifications")
+    print(f"{service} started", flush=True)
+    done = threading.Event()
+
+    def _stop(_signum: int, _frame: object) -> None:
+        print(f"{service} stopping", flush=True)
+        done.set()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    done.wait()
+
+
+if __name__ == "__main__":
+    run_until_stop()

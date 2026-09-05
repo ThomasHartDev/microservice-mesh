@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   SERVICE_IMAGES,
@@ -60,6 +61,48 @@ describe('image catalog', () => {
       expect(parsed.stages.at(-1)?.instructions.find((i) => i.keyword === 'USER')?.args).toMatch(/^65532/)
       if (img.service === 'gateway') expect(load(img.dockerfile)).not.toContain('MESH_SERVICE')
       else expect(load(img.dockerfile)).toContain(`MESH_SERVICE=${img.service}`)
+    }
+  })
+
+  it('runs TypeScript services via dist/run.js and Python via a __main__ guard', () => {
+    for (const img of SERVICE_IMAGES) {
+      if (img.language !== 'typescript') continue
+      const parsed = parseDockerfile(load(img.dockerfile))
+      const cmd = parsed.stages.at(-1)?.instructions.find((i) => i.keyword === 'CMD')?.args ?? ''
+      expect(cmd, img.dockerfile).toBe('["node", "dist/run.js"]')
+      expect(cmd).not.toContain('dist/index.js')
+    }
+    const run = load('src/run.ts')
+    expect(run).toContain('MESH_SERVICE')
+    expect(run).toContain('SIGTERM')
+    expect(run).toMatch(/setInterval/)
+    const worker = load('services/notifications/worker.py')
+    expect(worker).toMatch(/if __name__ == ["']__main__["']/)
+    expect(worker).toContain('SIGTERM')
+    const notifications = parseDockerfile(load('services/notifications/Dockerfile'))
+    const pyCmd = notifications.stages.at(-1)?.instructions.find((i) => i.keyword === 'CMD')?.args ?? ''
+    expect(pyCmd).toContain('worker.py')
+  })
+
+  it('typechecks src/run.ts with include limited to src', () => {
+    const cfg = 'tsconfig.src-only.test.json'
+    writeFileSync(
+      cfg,
+      JSON.stringify({
+        extends: './tsconfig.json',
+        include: ['src'],
+      }),
+    )
+    try {
+      expect(JSON.parse(load(cfg)).include).toEqual(['src'])
+      const result = spawnSync(
+        'node',
+        ['node_modules/typescript/bin/tsc', '--noEmit', '--pretty', 'false', '-p', cfg],
+        { encoding: 'utf8' },
+      )
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0)
+    } finally {
+      unlinkSync(cfg)
     }
   })
 

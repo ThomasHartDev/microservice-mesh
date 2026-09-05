@@ -15,4 +15,4 @@ COPY --from=build --chown=65532:65532 /src/package.json ./
 USER 65532:65532
 ENV NODE_ENV=production
 ENV MESH_SERVICE=orders
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/run.js"]

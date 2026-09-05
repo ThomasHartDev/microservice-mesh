@@ -1,0 +1,154 @@
+name: mesh
+
+networks:
+  mesh:
+
+volumes:
+  nats-data:
+  postgres-data:
+  redis-data:
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    volumes: ["nats-data:/data"]
+    ports: ["4222:4222"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 8
+      start_period: 5s
+    networks: [mesh]
+    restart: unless-stopped
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mesh
+      POSTGRES_PASSWORD: mesh
+      POSTGRES_DB: mesh
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mesh -d mesh"]
+      interval: 5s
+      timeout: 3s
+      retries: 8
+      start_period: 10s
+    networks: [mesh]
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 8
+      start_period: 5s
+    networks: [mesh]
+    restart: unless-stopped
+  orders:
+    build:
+      context: .
+      dockerfile: services/orders/Dockerfile
+    environment:
+      MESH_SERVICE: orders
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://mesh:mesh@postgres:5432/mesh
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 8s
+    networks: [mesh]
+    restart: unless-stopped
+  payments:
+    build:
+      context: .
+      dockerfile: services/payments/Dockerfile
+    environment:
+      MESH_SERVICE: payments
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://mesh:mesh@postgres:5432/mesh
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 8s
+    networks: [mesh]
+    restart: unless-stopped
+  inventory:
+    build:
+      context: .
+      dockerfile: services/inventory/Dockerfile
+    environment:
+      MESH_SERVICE: inventory
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://mesh:mesh@postgres:5432/mesh
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 8s
+    networks: [mesh]
+    restart: unless-stopped
+  notifications:
+    build:
+      context: .
+      dockerfile: services/notifications/Dockerfile
+    environment:
+      MESH_SERVICE: notifications
+      NATS_URL: nats://nats:4222
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 8s
+    networks: [mesh]
+    restart: unless-stopped
+  gateway:
+    build:
+      context: services/gateway
+      dockerfile: Dockerfile
+    ports: ["8080:8080"]
+    environment:
+      GATEWAY_ADDR: :8080
+      NATS_URL: nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/gateway", "-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 8s
+    networks: [mesh]
+    restart: unless-stopped

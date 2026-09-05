@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   SERVICE_IMAGES,
@@ -81,6 +82,28 @@ describe('image catalog', () => {
     const notifications = parseDockerfile(load('services/notifications/Dockerfile'))
     const pyCmd = notifications.stages.at(-1)?.instructions.find((i) => i.keyword === 'CMD')?.args ?? ''
     expect(pyCmd).toContain('worker.py')
+  })
+
+  it('typechecks src/run.ts with include limited to src', () => {
+    const cfg = 'tsconfig.src-only.test.json'
+    writeFileSync(
+      cfg,
+      JSON.stringify({
+        extends: './tsconfig.json',
+        include: ['src'],
+      }),
+    )
+    try {
+      expect(JSON.parse(load(cfg)).include).toEqual(['src'])
+      const result = spawnSync(
+        'node',
+        ['node_modules/typescript/bin/tsc', '--noEmit', '--pretty', 'false', '-p', cfg],
+        { encoding: 'utf8' },
+      )
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0)
+    } finally {
+      unlinkSync(cfg)
+    }
   })
 
   it('COPY sources exist relative to each image build context', () => {

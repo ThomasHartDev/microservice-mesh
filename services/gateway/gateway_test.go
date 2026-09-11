@@ -182,3 +182,50 @@ func post(g *Gateway, body, ct, corr string) *httptest.ResponseRecorder {
 	g.Handler().ServeHTTP(rec, req)
 	return rec
 }
+
+func TestTraceparentAndHealth(t *testing.T) {
+	const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	ctx := ParseTraceparent(tp)
+	if ctx == nil || FormatTraceparent(*ctx) != tp || !ctx.Sampled {
+		t.Fatalf("%+v", ctx)
+	}
+	if ParseTraceparent("00-00000000000000000000000000000000-00f067aa0ba902b7-01") != nil ||
+		ParseTraceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01") != nil ||
+		ParseTraceparent("ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01") != nil {
+		t.Fatal("invalid")
+	}
+	child := ContinueFrom(tp)
+	if child.TraceID != ctx.TraceID || child.SpanID == ctx.SpanID || child.ParentSpanID != ctx.SpanID {
+		t.Fatalf("%+v", child)
+	}
+	broker := &MemoryBroker{}
+	g := New(broker)
+	var logs bytes.Buffer
+	g.Log = &logs
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(validJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("traceparent", tp)
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	got := rec.Header().Get("traceparent")
+	span := ParseTraceparent(got)
+	if rec.Code != http.StatusAccepted || span == nil || span.TraceID != ctx.TraceID || span.SpanID == ctx.SpanID {
+		t.Fatalf("status %d resp %s", rec.Code, got)
+	}
+	if broker.Len() != 1 || broker.Events[0].Envelope.Traceparent != got {
+		t.Fatal("envelope")
+	}
+	if !bytes.Contains(logs.Bytes(), []byte(`"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736"`)) {
+		t.Fatalf("log %s", logs.String())
+	}
+	health := httptest.NewRecorder()
+	g.Handler().ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != 200 || !strings.Contains(health.Body.String(), `"service":"gateway"`) {
+		t.Fatalf("health %s", health.Body)
+	}
+	degraded := httptest.NewRecorder()
+	New(nil).Handler().ServeHTTP(degraded, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if degraded.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready %d", degraded.Code)
+	}
+}

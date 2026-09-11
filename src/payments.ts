@@ -1,4 +1,5 @@
 import { createEnvelope, type MessageEnvelope, type ValidationError } from './contracts.js'
+import { continueFrom, formatTraceparent } from './observability.js'
 
 export type Currency = 'USD' | 'EUR' | 'GBP'
 export type FailureReason = 'insufficient_funds' | 'card_declined' | 'processor_error'
@@ -40,9 +41,15 @@ export type ReserveRequest = {
   idempotency_key: string
   correlation_id: string
   causation_id?: string
+  traceparent?: string
 }
 
-export type ChargeRequest = { order_id: string; idempotency_key: string; causation_id?: string }
+export type ChargeRequest = {
+  order_id: string
+  idempotency_key: string
+  causation_id?: string
+  traceparent?: string
+}
 export type Publisher = { publish(routingKey: string, envelope: MessageEnvelope): Promise<void> }
 export type Clock = { now(): Date; newId(): string }
 export type PaymentRecord = {
@@ -198,9 +205,11 @@ export class PaymentsService {
       reserved_cents: 0, captured_cents: 0, reserve_key: req.idempotency_key,
       created_at: this.clock.now().toISOString(), correlation_id: req.correlation_id,
     }
-    if (this.blocked.has(req.customer_id)) return this.failReserve(payment, hash, 'card_declined', req.causation_id)
+    if (this.blocked.has(req.customer_id)) {
+      return this.failReserve(payment, hash, 'card_declined', req.causation_id, req.traceparent)
+    }
     if (!this.store.authorize(req.customer_id, req.amount_cents)) {
-      return this.failReserve(payment, hash, 'insufficient_funds', req.causation_id)
+      return this.failReserve(payment, hash, 'insufficient_funds', req.causation_id, req.traceparent)
     }
     payment.reserved_cents = req.amount_cents
     this.store.put({ payment, reserve_hash: hash, event: null, published: false })
@@ -237,7 +246,7 @@ export class PaymentsService {
         order_id: rec.payment.order_id, payment_id: rec.payment.payment_id,
         amount_cents: rec.payment.reserved_cents, currency: rec.payment.currency,
       },
-      rec.payment.correlation_id, req.causation_id, this.clock.now().toISOString(),
+      rec.payment.correlation_id, req.causation_id, this.clock.now().toISOString(), req.traceparent,
     )
     if (!event.ok) return event.outcome
     if (!this.store.capture(rec.payment.customer_id, rec.payment.reserved_cents)) {
@@ -267,6 +276,7 @@ export class PaymentsService {
     hash: string,
     reason: Exclude<FailureReason, 'processor_error'>,
     causation_id: string | undefined,
+    traceparent: string | undefined,
   ): Promise<Outcome> {
     payment.status = 'failed'
     payment.reason = reason
@@ -274,7 +284,7 @@ export class PaymentsService {
     const event = this.envelope(
       'events.payment_failed',
       { order_id: payment.order_id, reason, retryable: false },
-      payment.correlation_id, causation_id, payment.created_at,
+      payment.correlation_id, causation_id, payment.created_at, traceparent,
     )
     if (!event.ok) return event.outcome
     const rec: PaymentRecord = { payment, reserve_hash: hash, event: event.envelope, published: false }
@@ -290,10 +300,12 @@ export class PaymentsService {
     correlation_id: string,
     causation_id: string | undefined,
     occurred_at: string,
+    traceparent: string | undefined,
   ): { ok: true; envelope: MessageEnvelope } | { ok: false; outcome: Outcome } {
     const built = createEnvelope({
       type, source: 'payments', payload, correlation_id,
       message_id: this.clock.newId(), causation_id, occurred_at,
+      traceparent: formatTraceparent(continueFrom(traceparent)),
     })
     if (!built.ok || !built.envelope) {
       return {

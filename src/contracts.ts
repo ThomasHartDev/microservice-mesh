@@ -1,3 +1,5 @@
+import { formatTraceparent, parseTraceparent } from './observability.js'
+
 export type JsonValue = string | number | boolean | null | JsonObject | JsonValue[]
 export type JsonObject = { [key: string]: JsonValue }
 
@@ -47,6 +49,7 @@ export type MessageEnvelope = {
   message_id: string
   correlation_id: string
   causation_id?: string
+  traceparent?: string
   type: MessageType
   schema_version: string
   occurred_at: string
@@ -164,6 +167,7 @@ const envelopeSchema = o(
     message_id: u(),
     correlation_id: u(),
     causation_id: u(),
+    traceparent: { type: 'string', minLength: 55 },
     type: { type: 'string', minLength: 1 },
     schema_version: { type: 'string', pattern: '^[0-9]+\\.[0-9]+\\.[0-9]+$' },
     occurred_at: { type: 'string', format: 'date-time' },
@@ -301,6 +305,7 @@ export function createEnvelope(input: {
   correlation_id: string
   message_id: string
   causation_id?: string
+  traceparent?: string
   occurred_at?: string
 }): ValidationResult & { envelope?: MessageEnvelope } {
   const entry = getCatalogEntry(input.type)
@@ -317,6 +322,11 @@ export function createEnvelope(input: {
     payload: payload.value as JsonObject,
   }
   if (input.causation_id) envelope.causation_id = input.causation_id
+  if (input.traceparent !== undefined) {
+    const span = parseTraceparent(input.traceparent)
+    if (!span) return { ok: false, errors: [{ path: 'traceparent', message: 'traceparent' }] }
+    envelope.traceparent = formatTraceparent(span)
+  }
   const shell = validate(envelope as unknown as JsonValue, envelopeSchema)
   if (!shell.ok) return shell
   return { ok: true, value: envelope as unknown as JsonValue, envelope }
@@ -352,5 +362,10 @@ export function parseEnvelope(
     payload: payload.value as JsonObject,
   }
   if (typeof obj['causation_id'] === 'string') envelope.causation_id = obj['causation_id']
+  if (typeof obj['traceparent'] === 'string') {
+    const span = parseTraceparent(obj['traceparent'])
+    if (!span) return { ok: false, errors: [{ path: 'traceparent', message: 'traceparent' }] }
+    envelope.traceparent = formatTraceparent(span)
+  }
   return { ok: true, envelope }
 }

@@ -5,6 +5,7 @@ import {
   type MessageEnvelope,
   type ValidationError,
 } from './contracts.js'
+import { continueFrom, formatTraceparent } from './observability.js'
 
 export type Currency = 'USD' | 'EUR' | 'GBP'
 export type SagaStatus = 'awaiting_inventory' | 'awaiting_payment' | 'completed' | 'cancelled'
@@ -255,6 +256,7 @@ export class OrderSagaOrchestrator {
       type: spec.type, source: 'orders', payload: spec.payload,
       correlation_id: saga.correlation_id, message_id: this.clock.newId(),
       causation_id: cause.message_id, occurred_at: this.clock.now().toISOString(),
+      traceparent: formatTraceparent(continueFrom(cause.traceparent)),
     })
     if (!built.ok || !built.envelope) {
       return { kind: 'rejected', errors: built.ok ? [{ path: '$', message: 'envelope' }] : built.errors }

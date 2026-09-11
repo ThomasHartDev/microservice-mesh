@@ -28,7 +28,9 @@ func main() {
 		return
 	}
 	pub := gateway.LogPublisher{W: os.Stdout}
-	srv := &http.Server{Addr: addr, Handler: gateway.New(pub).Handler()}
+	g := gateway.New(pub)
+	g.Log = os.Stdout
+	srv := &http.Server{Addr: addr, Handler: g.Handler()}
 	log.Printf("gateway listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
 }

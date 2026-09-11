@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseEnvelope } from '../src/index.js'
+import { parseEnvelope, parseTraceparent } from '../src/index.js'
 import {
   MemoryPaymentStore,
   MemoryPublisher,
@@ -66,6 +66,20 @@ describe('PaymentsService', () => {
     expect(parseEnvelope(charged.event).ok).toBe(true)
     expect(publisher.events[0]?.routingKey).toBe(PAYMENT_CHARGED_ROUTING_KEY)
     expect(store.ledger(A)).toEqual({ customer_id: A, available_cents: 7000, held_cents: 0 })
+  })
+
+  it('continues the inbound W3C trace on payment_charged', async () => {
+    const tp = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+    const { pay } = svc()
+    expect((await pay.reserve(req())).kind).toBe('reserved')
+    const charged = await pay.charge({
+      order_id: B, idempotency_key: 'charge-1', causation_id: E, traceparent: tp,
+    })
+    expect(charged.kind).toBe('charged')
+    if (charged.kind !== 'charged') return
+    const child = parseTraceparent(charged.event.traceparent ?? '')
+    expect(child?.traceId).toBe('4bf92f3577b34da6a3ce929d0e0e4736')
+    expect(child?.spanId).not.toBe('00f067aa0ba902b7')
   })
 
   it('rejects zero/overflow amounts, short keys, and charge without a reserve', async () => {

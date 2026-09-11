@@ -4,11 +4,21 @@ import json
 import os
 import re
 import signal
+import sys
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable
+
+_here = Path(__file__).resolve().parent
+for extra in (_here, _here.parent.parent / "python"):
+    if extra.is_dir() and str(extra) not in sys.path:
+        sys.path.insert(0, str(extra))
+
+from observability import continue_from, format_log, format_traceparent, handle_health_request, parse_traceparent
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I
@@ -27,6 +37,7 @@ CREATED, COMPLETED, CANCELLED = (
 TERMINAL = frozenset({COMPLETED, CANCELLED})
 CONSUMED = frozenset({CREATED, COMPLETED, CANCELLED})
 SHELL = ("message_id", "correlation_id", "type", "schema_version", "occurred_at", "source", "payload")
+OPTIONAL = frozenset({"causation_id", "traceparent"})
 ITEM_KEYS = ("sku", "quantity", "unit_price_cents")
 PAYLOADS = {
     COMPLETED: ("order_id", "payment_id", "reservation_id", "total_cents"),
@@ -76,6 +87,7 @@ class Envelope:
     occurred_at: str
     source: str
     payload: dict[str, Any]
+    traceparent: str | None = None
 
 
 @dataclass
@@ -261,7 +273,7 @@ def parse_envelope(raw: Any) -> tuple[Envelope | None, tuple[FieldError, ...]]:
     for key in SHELL:
         if key not in raw:
             return _fail(key, "required")
-    if any(k not in SHELL and k != "causation_id" for k in raw):
+    if any(k not in SHELL and k not in OPTIONAL for k in raw):
         return _fail("additional", "additional")
     mid, cid, typ, ver = raw["message_id"], raw["correlation_id"], raw["type"], raw["schema_version"]
     at, src, payload = raw["occurred_at"], raw["source"], raw["payload"]
@@ -269,6 +281,13 @@ def parse_envelope(raw: Any) -> tuple[Envelope | None, tuple[FieldError, ...]]:
         return _fail("message_id" if not _uuid(mid) else "correlation_id", "uuid")
     if "causation_id" in raw and not _uuid(raw["causation_id"]):
         return _fail("causation_id", "uuid")
+    header: str | None = None
+    if "traceparent" in raw:
+        tp = raw["traceparent"]
+        parsed = parse_traceparent(tp) if isinstance(tp, str) else None
+        if parsed is None:
+            return _fail("traceparent", "traceparent")
+        header = format_traceparent(parsed)
     if not isinstance(typ, str) or not typ:
         return _fail("type", "minLength 1")
     if not isinstance(ver, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", ver):
@@ -284,13 +303,13 @@ def parse_envelope(raw: Any) -> tuple[Envelope | None, tuple[FieldError, ...]]:
     if not isinstance(payload, dict):
         return _fail("payload", "object")
     if typ not in CONSUMED:
-        return Envelope(mid, cid, typ, ver, at, src, payload), ()
+        return Envelope(mid, cid, typ, ver, at, src, payload, header), ()
     if ver != SCHEMA:
         return _fail("schema_version", f"expected {SCHEMA}, got {ver}")
     if src != "orders":
         return _fail("source", "expected orders")
     bad = _created_payload(payload) if typ == CREATED else _payload(typ, payload)
-    return (None, (bad,)) if bad else (Envelope(mid, cid, typ, ver, at, src, payload), ())
+    return (None, (bad,)) if bad else (Envelope(mid, cid, typ, ver, at, src, payload, header), ())
 
 
 class Worker:
@@ -312,6 +331,17 @@ class Worker:
             return Outcome("rejected", errors=errors)
         if env.type not in CONSUMED:
             return Outcome("ignored")
+        span = continue_from(env.traceparent)
+        print(
+            format_log(
+                level="info",
+                service="notifications",
+                msg=env.type,
+                span=span,
+                correlation_id=env.correlation_id,
+            ),
+            flush=True,
+        )
         oid = str(env.payload["order_id"])
         with self.store.lock_for(oid):
             return self._locked(env, oid)
@@ -414,13 +444,50 @@ class Worker:
         return Outcome("failed", dispatch=dispatch, order_id=dispatch.order_id)
 
 
+def default_checks() -> list[dict[str, object]]:
+    return [{"name": "process", "ok": True}]
+
+
+def health_request(
+    method: str,
+    url: str,
+    checks: list[dict[str, object]] | None = None,
+    service: str | None = None,
+) -> tuple[int, str]:
+    return handle_health_request(
+        method,
+        url,
+        service or os.environ.get("MESH_SERVICE", "notifications"),
+        checks if checks is not None else default_checks(),
+    )
+
+
 def run_until_stop() -> None:
     service = os.environ.get("MESH_SERVICE", "notifications")
     print(f"{service} started", flush=True)
     done = threading.Event()
+    checks = default_checks()
+
+    class Health(BaseHTTPRequestHandler):
+        def log_message(self, _fmt: str, *_args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            status, body_s = health_request(self.command, self.path, checks, service)
+            body = body_s.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    port = int(os.environ.get("HEALTH_PORT", "8081"))
+    httpd = ThreadingHTTPServer(("0.0.0.0", port), Health)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
     def _stop(_signum: int, _frame: object) -> None:
         print(f"{service} stopping", flush=True)
+        httpd.shutdown()
         done.set()
 
     signal.signal(signal.SIGTERM, _stop)

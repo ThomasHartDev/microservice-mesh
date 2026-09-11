@@ -53,6 +53,7 @@ type Envelope struct {
 	SchemaVersion string     `json:"schema_version"`
 	OccurredAt    string     `json:"occurred_at"`
 	Source        string     `json:"source"`
+	Traceparent   string     `json:"traceparent,omitempty"`
 	Payload       PlaceOrder `json:"payload"`
 }
 
@@ -169,6 +170,7 @@ type Gateway struct {
 	pub   Publisher
 	now   func() time.Time
 	newID func() string
+	Log   io.Writer
 	mu    sync.Mutex
 	seen  map[string]*inflight
 }
@@ -176,13 +178,15 @@ type Gateway struct {
 func New(pub Publisher) *Gateway {
 	return &Gateway{
 		pub: pub, now: func() time.Time { return time.Now().UTC() },
-		newID: newUUIDv4, seen: make(map[string]*inflight),
+		newID: newUUIDv4, Log: io.Discard, seen: make(map[string]*inflight),
 	}
 }
 
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("GET /health", g.health)
+	mux.HandleFunc("GET /ready", g.health)
 	mux.HandleFunc("POST /v1/orders", g.placeOrder)
 	return mux
 }
@@ -191,6 +195,20 @@ func healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (g *Gateway) health(w http.ResponseWriter, r *http.Request) {
+	report := map[string]any{
+		"status": "ok", "live": true, "ready": true, "service": "gateway",
+		"checks": []map[string]any{{"name": "process", "ok": true}},
+	}
+	if r.URL.Path == "/ready" && g.pub == nil {
+		report["status"] = "degraded"
+		report["ready"] = false
+		writeJSON(w, http.StatusServiceUnavailable, report)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (g *Gateway) placeOrder(w http.ResponseWriter, r *http.Request) {
@@ -236,19 +254,22 @@ func (g *Gateway) placeOrder(w http.ResponseWriter, r *http.Request) {
 	if !uuidRE.MatchString(corr) {
 		corr = g.newID()
 	}
+	span := ContinueFrom(r.Header.Get("traceparent"))
 	env := Envelope{
 		MessageID: g.newID(), CorrelationID: corr, Type: MessageTypePlaceOrder,
 		SchemaVersion: SchemaVersion, OccurredAt: g.now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		Source: SourceGateway, Payload: req,
+		Source: SourceGateway, Traceparent: FormatTraceparent(span), Payload: req,
 	}
 	if err := g.pub.Publish(r.Context(), RoutingKeyPlaceOrder, env); err != nil {
 		g.failIdempotent(req.IdempotencyKey, slot)
 		writeErr(w, http.StatusServiceUnavailable, FieldError{Path: "broker", Message: "publish failed"})
 		return
 	}
+	writeLog(g.Log, span, corr, env.MessageID, "place_order")
 	payload, _ := json.Marshal(Accepted{MessageID: env.MessageID, CorrelationID: env.CorrelationID, Type: env.Type})
 	g.finishIdempotent(slot, http.StatusAccepted, payload)
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("traceparent", env.Traceparent)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write(payload)
 }

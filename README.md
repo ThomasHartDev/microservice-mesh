@@ -63,6 +63,10 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Compensating transactions in LIFO order of completed forward steps
 - Out-of-order reply buffering when participants race
 - Write-ahead terminal decision with idempotent publish retry
+- W3C Trace Context (`traceparent`) across HTTP and message envelopes
+- Parent/child spans that share a trace id and mint a new span id per hop
+- Structured JSON logs with `trace_id`, `span_id`, `correlation_id`
+- Liveness (`GET /health`) versus readiness (`GET /ready`) per service
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -110,6 +114,7 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Out-of-order reply buffering when participants race
 - Write-ahead terminal decision with idempotent publish retry
 - Saga/orchestration for the order flow with compensating actions on failure
+- Structured logging + OTel tracing propagated across services; a /health per service
 ## Usage
 
 ```bash
@@ -130,6 +135,8 @@ cd services/gateway && go run ./cmd/gateway
 ```
 
 Stdout is the published envelope until a NATS adapter lands. `docker compose up --build` starts NATS JetStream, Postgres, Redis, and the five services on the `mesh` network. App containers wait on `service_healthy`. Postgres and Redis stay unpublished. Gateway is `localhost:8080`.
+
+Send `traceparent` on `POST /v1/orders`. The gateway starts a child span, writes it on the command envelope, and logs one JSON line with `trace_id` / `span_id`. Orders continues that trace on `events.order_created`. `GET /health` is liveness (always 200 if the process can answer). `GET /ready` is readiness and returns 503 when a check fails. Gateway listens on 8080. TypeScript services and the Python worker listen on `HEALTH_PORT` (default 8081).
 
 ## License
 

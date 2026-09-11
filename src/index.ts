@@ -105,3 +105,18 @@ export type {
   Compensation,
   SagaInstance,
 } from './saga.js'
+
+export {
+  continueFrom,
+  extractTraceparent,
+  formatLog,
+  formatTraceparent,
+  handleHealthRequest,
+  healthReport,
+  parseTraceparent,
+  startSpan,
+  type Check,
+  type HealthReport,
+  type LogLevel,
+  type SpanContext,
+} from './observability.js'

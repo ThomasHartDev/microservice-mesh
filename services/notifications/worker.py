@@ -8,6 +8,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 UUID_RE = re.compile(
@@ -27,6 +28,8 @@ CREATED, COMPLETED, CANCELLED = (
 TERMINAL = frozenset({COMPLETED, CANCELLED})
 CONSUMED = frozenset({CREATED, COMPLETED, CANCELLED})
 SHELL = ("message_id", "correlation_id", "type", "schema_version", "occurred_at", "source", "payload")
+OPTIONAL = frozenset({"causation_id", "traceparent"})
+TRACEPARENT_RE = re.compile(r"(?i)^[0-9a-f]{2}-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
 ITEM_KEYS = ("sku", "quantity", "unit_price_cents")
 PAYLOADS = {
     COMPLETED: ("order_id", "payment_id", "reservation_id", "total_cents"),
@@ -261,7 +264,7 @@ def parse_envelope(raw: Any) -> tuple[Envelope | None, tuple[FieldError, ...]]:
     for key in SHELL:
         if key not in raw:
             return _fail(key, "required")
-    if any(k not in SHELL and k != "causation_id" for k in raw):
+    if any(k not in SHELL and k not in OPTIONAL for k in raw):
         return _fail("additional", "additional")
     mid, cid, typ, ver = raw["message_id"], raw["correlation_id"], raw["type"], raw["schema_version"]
     at, src, payload = raw["occurred_at"], raw["source"], raw["payload"]
@@ -269,6 +272,11 @@ def parse_envelope(raw: Any) -> tuple[Envelope | None, tuple[FieldError, ...]]:
         return _fail("message_id" if not _uuid(mid) else "correlation_id", "uuid")
     if "causation_id" in raw and not _uuid(raw["causation_id"]):
         return _fail("causation_id", "uuid")
+    if "traceparent" in raw:
+        tp = raw["traceparent"]
+        m = TRACEPARENT_RE.fullmatch(tp) if isinstance(tp, str) else None
+        if not m or m.group(1) == "0" * 32 or m.group(2) == "0" * 16 or tp[:2].lower() == "ff":
+            return _fail("traceparent", "traceparent")
     if not isinstance(typ, str) or not typ:
         return _fail("type", "minLength 1")
     if not isinstance(ver, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", ver):
@@ -418,9 +426,34 @@ def run_until_stop() -> None:
     service = os.environ.get("MESH_SERVICE", "notifications")
     print(f"{service} started", flush=True)
     done = threading.Event()
+    body = json.dumps(
+        {"status": "ok", "live": True, "ready": True, "service": service, "checks": [{"name": "process", "ok": True}]},
+        separators=(",", ":"),
+    ).encode()
+
+    class Health(BaseHTTPRequestHandler):
+        def log_message(self, _fmt: str, *_args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path not in ("/health", "/ready"):
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    port = int(os.environ.get("HEALTH_PORT", "8081"))
+    httpd = ThreadingHTTPServer(("0.0.0.0", port), Health)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
     def _stop(_signum: int, _frame: object) -> None:
         print(f"{service} stopping", flush=True)
+        httpd.shutdown()
         done.set()
 
     signal.signal(signal.SIGTERM, _stop)

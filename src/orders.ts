@@ -5,6 +5,7 @@ import {
   type MessageEnvelope,
   type ValidationError,
 } from './contracts.js'
+import { continueFrom, formatTraceparent } from './observability.js'
 
 export type LineItem = {
   sku: string
@@ -233,6 +234,7 @@ export class OrdersService {
       correlation_id: env.correlation_id,
       message_id: this.clock.newId(),
       causation_id: env.message_id,
+      traceparent: formatTraceparent(continueFrom(env.traceparent)),
       occurred_at: createdAt,
     })
     if (!built.ok || !built.envelope) {

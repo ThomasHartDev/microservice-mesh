@@ -5,7 +5,7 @@ import {
   type MessageEnvelope,
   type ValidationError,
 } from './contracts.js'
-import { continueFrom, formatTraceparent } from './observability.js'
+import { continueFrom, formatLog, formatTraceparent } from './observability.js'
 
 export type LineItem = {
   sku: string
@@ -217,6 +217,7 @@ export class OrdersService {
       correlation_id: env.correlation_id,
       source_message_id: env.message_id,
     }
+    const span = continueFrom(env.traceparent)
     const built = createEnvelope({
       type: 'events.order_created',
       source: 'orders',
@@ -234,12 +235,21 @@ export class OrdersService {
       correlation_id: env.correlation_id,
       message_id: this.clock.newId(),
       causation_id: env.message_id,
-      traceparent: formatTraceparent(continueFrom(env.traceparent)),
+      traceparent: formatTraceparent(span),
       occurred_at: createdAt,
     })
     if (!built.ok || !built.envelope) {
       return { kind: 'rejected', errors: built.ok ? [{ path: '$', message: 'envelope' }] : built.errors }
     }
+    process.stdout.write(
+      formatLog({
+        level: 'info',
+        service: 'orders',
+        msg: 'events.order_created',
+        span,
+        correlation_id: env.correlation_id,
+      }) + '\n',
+    )
 
     const rec: OrderRecord = { order, request_hash: hash, event: built.envelope, published: false }
     this.store.put(rec)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createEnvelope, parseEnvelope, type JsonObject } from '../src/index.js'
+import { createEnvelope, parseEnvelope, parseTraceparent, type JsonObject } from '../src/index.js'
 import {
   InventoryService,
   INVENTORY_FAILED_ROUTING_KEY,
@@ -36,9 +36,15 @@ function clock(ids: string[]): Clock {
   }
 }
 
-function created(payload: JsonObject, messageId: string, source: 'orders' | 'gateway' = 'orders') {
+function created(
+  payload: JsonObject,
+  messageId: string,
+  source: 'orders' | 'gateway' = 'orders',
+  traceparent?: string,
+) {
   const built = createEnvelope({
     type: 'events.order_created', source, payload, correlation_id: B, message_id: messageId, occurred_at: AT,
+    traceparent,
   })
   if (!built.ok || !built.envelope) throw new Error('fixture')
   return built.envelope
@@ -79,6 +85,18 @@ describe('InventoryService', () => {
     expect(parseEnvelope(out.event).ok).toBe(true)
     expect(publisher.events[0]?.routingKey).toBe(INVENTORY_RESERVED_ROUTING_KEY)
     expect(available(store.lot('SKU-1', 'wh-east')!)).toBe(8)
+  })
+
+  it('continues the inbound W3C trace on inventory_reserved', async () => {
+    const tp = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+    const { svc } = service()
+    const out = await svc.handle(created(orderPayload(), A, 'orders', tp))
+    expect(out.kind).toBe('reserved')
+    if (out.kind !== 'reserved') return
+    const child = parseTraceparent(out.event.traceparent ?? '')
+    expect(child?.traceId).toBe('4bf92f3577b34da6a3ce929d0e0e4736')
+    expect(child?.spanId).not.toBe('00f067aa0ba902b7')
+    expect(out.event.traceparent).toMatch(/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-01$/)
   })
 
   it('rolls back earlier holds when a later SKU would oversell', async () => {

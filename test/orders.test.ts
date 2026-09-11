@@ -126,6 +126,30 @@ describe('OrdersService', () => {
     expect(out.event.traceparent).toMatch(/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-01$/)
   })
 
+  it('logs the continued trace id on events.order_created', async () => {
+    const tp = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+    const chunks: string[] = []
+    const write = process.stdout.write
+    process.stdout.write = (chunk: string) => {
+      chunks.push(chunk)
+      return true
+    }
+    try {
+      const { svc } = service()
+      const out = await svc.handle(command(placeOrder, A, 'gateway', tp))
+      expect(out.kind).toBe('created')
+      const line = chunks.join('').split('\n').find((row) => row.includes('"trace_id"'))
+      expect(line).toBeTruthy()
+      const rec = JSON.parse(line ?? '{}') as { trace_id?: string; span_id?: string; correlation_id?: string }
+      expect(rec.trace_id).toBe('4bf92f3577b34da6a3ce929d0e0e4736')
+      expect(rec.correlation_id).toBe(B)
+      expect(rec.span_id).toMatch(/^[0-9a-f]{16}$/)
+      expect(rec.span_id).not.toBe('00f067aa0ba902b7')
+    } finally {
+      process.stdout.write = write
+    }
+  })
+
   it('rejects bad envelopes, wrong type, non-gateway source, and overflow', async () => {
     const { store, publisher, svc } = service()
     expect((await svc.handle(null)).kind).toBe('rejected')

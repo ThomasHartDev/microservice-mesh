@@ -5,6 +5,7 @@ import {
   type MessageEnvelope,
   type ValidationError,
 } from './contracts.js'
+import { continueFrom, formatTraceparent } from './observability.js'
 
 export type FailReason = 'out_of_stock' | 'sku_unknown' | 'warehouse_unavailable'
 export type ReservationStatus = 'reserved' | 'released' | 'failed'
@@ -267,6 +268,7 @@ export class InventoryService {
       type: status === 'reserved' ? 'events.inventory_reserved' : 'events.inventory_reservation_failed',
       source: 'inventory', payload, correlation_id: env.correlation_id,
       message_id: this.clock.newId(), causation_id: env.message_id, occurred_at: createdAt,
+      traceparent: formatTraceparent(continueFrom(env.traceparent)),
     })
     if (!built.ok || !built.envelope) {
       for (const h of items) this.store.unhold(h.sku, h.warehouse_id, h.quantity)

@@ -48,7 +48,12 @@ export {
   matchSubject,
   publishEnvelope,
   validSubject,
+  type BackoffOptions,
   type Broker,
+  type BrokerOptions,
+  type CircuitBreakerOptions,
+  type CircuitState,
+  type DeadLetter,
   type Delivery,
 } from './broker.js'
 

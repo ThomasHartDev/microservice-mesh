@@ -22,7 +22,37 @@ export type Broker = {
   subscribe(pattern: string, handler: (d: Delivery) => void | Promise<void>, opts?: { queue?: string }): Promise<{ unsubscribe: () => void }>
   close(): Promise<void>
 }
-type Sub = { id: number; pattern: string; queue: string | undefined; handler: (d: Delivery) => void | Promise<void> }
+
+export type CircuitState = 'closed' | 'open' | 'half-open'
+export type BackoffOptions = { baseMs: number; maxMs: number; factor: number }
+export type CircuitBreakerOptions = { failureThreshold: number; cooldownMs: number }
+export type DeadLetter = { subject: string; reason: 'max_deliver_exhausted' | 'circuit_open'; attempts: number; failedAt: string; data: number[] }
+export type BrokerOptions = {
+  maxDeliver?: number
+  backoff?: BackoffOptions
+  circuitBreaker?: CircuitBreakerOptions
+  deadLetterSubject?: (subject: string) => string
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+}
+
+const DEFAULT_BACKOFF: BackoffOptions = { baseMs: 0, maxMs: 0, factor: 2 }
+
+function defaultDeadLetterSubject(subject: string): string {
+  return `dlq.${subject}`
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function backoffDelayMs(backoff: BackoffOptions, attempt: number): number {
+  const delay = backoff.baseMs * backoff.factor ** (attempt - 1)
+  return Math.min(delay, backoff.maxMs)
+}
+
+type Breaker = { state: CircuitState; failures: number; openedAt: number }
+type Sub = { id: number; pattern: string; queue: string | undefined; handler: (d: Delivery) => void | Promise<void>; breaker: Breaker }
 
 export function validSubject(value: string, wildcards: boolean): boolean {
   if (!value) return false
@@ -53,7 +83,14 @@ export function matchSubject(subject: string, pattern: string): boolean {
   return i === s.length
 }
 
-export function createMemoryBroker(): Broker {
+export function createMemoryBroker(opts: BrokerOptions = {}): Broker {
+  const maxDeliver = opts.maxDeliver ?? MAX_DELIVER
+  const backoff = opts.backoff ?? DEFAULT_BACKOFF
+  const breakerOpts = opts.circuitBreaker
+  const deadLetterSubject = opts.deadLetterSubject ?? defaultDeadLetterSubject
+  const now = opts.now ?? Date.now
+  const sleep = opts.sleep ?? defaultSleep
+
   let closed = false
   let nextId = 1
   const subs: Sub[] = []
@@ -84,17 +121,72 @@ export function createMemoryBroker(): Broker {
     return targets
   }
 
+  const breakerAllows = (sub: Sub): boolean => {
+    if (!breakerOpts) return true
+    if (sub.breaker.state === 'open') {
+      if (now() - sub.breaker.openedAt < breakerOpts.cooldownMs) return false
+      sub.breaker.state = 'half-open'
+    }
+    return true
+  }
+
+  const recordSuccess = (sub: Sub): void => {
+    sub.breaker.failures = 0
+    sub.breaker.state = 'closed'
+  }
+
+  const recordFailure = (sub: Sub): void => {
+    if (!breakerOpts) return
+    if (sub.breaker.state === 'half-open') {
+      sub.breaker.state = 'open'
+      sub.breaker.openedAt = now()
+      sub.breaker.failures = 0
+      return
+    }
+    sub.breaker.failures += 1
+    if (sub.breaker.failures >= breakerOpts.failureThreshold) {
+      sub.breaker.state = 'open'
+      sub.breaker.openedAt = now()
+      sub.breaker.failures = 0
+    }
+  }
+
+  const deadLetter = async (subject: string, data: Uint8Array, reason: DeadLetter['reason'], attempts: number): Promise<void> => {
+    const letter: DeadLetter = { subject, reason, attempts, failedAt: new Date(now()).toISOString(), data: Array.from(data) }
+    const dlqSubject = deadLetterSubject(subject)
+    const encoded = new TextEncoder().encode(JSON.stringify(letter))
+    for (const target of pick(dlqSubject)) {
+      try {
+        await target.handler({ subject: dlqSubject, data: encoded.slice(), ack: () => {}, nack: () => {} })
+      } catch {
+        /* dead-letter delivery is best-effort */
+      }
+    }
+  }
+
   const deliver = async (sub: Sub, subject: string, data: Uint8Array, attempt: number): Promise<void> => {
+    if (!breakerAllows(sub)) {
+      await deadLetter(subject, data, 'circuit_open', attempt)
+      return
+    }
     let nacked = false
     try {
       await sub.handler({ subject, data: data.slice(), ack: () => {}, nack: () => { nacked = true } })
     } catch {
       nacked = true
     }
-    if (nacked && attempt < MAX_DELIVER) {
-      const next = sub.queue === undefined ? [sub] : pick(subject, sub.pattern, sub.queue)
-      await deliver(next[0] ?? sub, subject, data, attempt + 1)
+    if (!nacked) {
+      recordSuccess(sub)
+      return
     }
+    recordFailure(sub)
+    if (attempt >= maxDeliver) {
+      await deadLetter(subject, data, 'max_deliver_exhausted', attempt)
+      return
+    }
+    await sleep(backoffDelayMs(backoff, attempt))
+    const next = sub.queue === undefined ? [sub] : pick(subject, sub.pattern, sub.queue)
+    await deliver(next[0] ?? sub, subject, data, attempt + 1)
   }
 
   return {
@@ -109,7 +201,7 @@ export function createMemoryBroker(): Broker {
       if (!validSubject(pattern, true)) throw new SubjectError('invalid pattern')
       const queue = opts?.queue
       if (queue !== undefined && queue.trim() === '') throw new SubjectError('invalid queue')
-      const sub: Sub = { id: nextId++, pattern, queue, handler }
+      const sub: Sub = { id: nextId++, pattern, queue, handler, breaker: { state: 'closed', failures: 0, openedAt: 0 } }
       subs.push(sub)
       return {
         unsubscribe() {

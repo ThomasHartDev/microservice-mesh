@@ -67,6 +67,10 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Parent/child spans that share a trace id and mint a new span id per hop
 - Structured JSON logs with `trace_id`, `span_id`, `correlation_id`
 - Liveness (`GET /health`) versus readiness (`GET /ready`) per service
+
+- Retry with exponential backoff, capped at a configurable ceiling
+- Circuit breaker (closed/open/half-open) per consumer, tripped on consecutive failures and probed after a cooldown
+- Dead-letter routing for exhausted or circuit-broken messages, published intact to `dlq.<subject>`
 ## What's implemented
 
 - Project scaffold with TypeScript strict mode, Vitest, and CI
@@ -115,6 +119,7 @@ A realistic microservices mesh for placing an order, reserving inventory, chargi
 - Write-ahead terminal decision with idempotent publish retry
 - Saga/orchestration for the order flow with compensating actions on failure
 - Structured JSON logs with W3C Trace Context (`traceparent`) propagated across services; liveness (`GET /health`) and readiness (`GET /ready`) per service
+- Retries with backoff, a per-consumer circuit breaker, and a dead-letter path on the TypeScript broker (`src/broker.ts`): failed deliveries back off exponentially up to a cap, a consumer that fails repeatedly trips its breaker and gets short-circuited until a cooldown lets one half-open trial through, and messages that exhaust retries or hit an open breaker land intact on `dlq.<subject>` instead of vanishing
 ## Usage
 
 ```bash

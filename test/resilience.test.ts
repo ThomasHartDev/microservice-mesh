@@ -102,6 +102,44 @@ describe('circuit breaker', () => {
     expect(calls).toBe(3)
   })
 
+  it('allows only one concurrent half-open trial; other racing publishes short-circuit to the DLQ', async () => {
+    const clock = fakeClock()
+    const bus = createMemoryBroker({
+      maxDeliver: 1,
+      circuitBreaker: { failureThreshold: 1, cooldownMs: 100 },
+      now: clock.now,
+      deadLetterSubject: (subject) => `dlq.${subject}`,
+    })
+    let inFlight = 0
+    let maxConcurrent = 0
+    let first = true
+    const calls: string[] = []
+    await bus.subscribe('a.b', async (d) => {
+      inFlight += 1
+      maxConcurrent = Math.max(maxConcurrent, inFlight)
+      calls.push(dec.decode(d.data))
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      inFlight -= 1
+      if (first) { first = false; throw new Error('down') }
+    })
+    const letters: DeadLetter[] = []
+    await bus.subscribe('dlq.a.b', (d) => { letters.push(decodeLetter(d.data)) })
+
+    await bus.publish('a.b', enc.encode('trigger-open'))
+    clock.advance(100)
+
+    await Promise.all([
+      bus.publish('a.b', enc.encode('race-1')),
+      bus.publish('a.b', enc.encode('race-2')),
+    ])
+
+    expect(maxConcurrent).toBe(1)
+    expect(calls).toEqual(['trigger-open', 'race-1'])
+    const circuitOpenLetters = letters.filter((l) => l.reason === 'circuit_open')
+    expect(circuitOpenLetters).toHaveLength(1)
+    expect(circuitOpenLetters[0]).toMatchObject({ subject: 'a.b', reason: 'circuit_open' })
+  })
+
   it('tracks queue members independently', async () => {
     const clock = fakeClock()
     const bus = createMemoryBroker({

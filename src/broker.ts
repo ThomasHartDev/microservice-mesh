@@ -51,7 +51,7 @@ function backoffDelayMs(backoff: BackoffOptions, attempt: number): number {
   return Math.min(delay, backoff.maxMs)
 }
 
-type Breaker = { state: CircuitState; failures: number; openedAt: number }
+type Breaker = { state: CircuitState; failures: number; openedAt: number; trialInFlight: boolean }
 type Sub = { id: number; pattern: string; queue: string | undefined; handler: (d: Delivery) => void | Promise<void>; breaker: Breaker }
 
 export function validSubject(value: string, wildcards: boolean): boolean {
@@ -125,14 +125,19 @@ export function createMemoryBroker(opts: BrokerOptions = {}): Broker {
     if (!breakerOpts) return true
     if (sub.breaker.state === 'open') {
       if (now() - sub.breaker.openedAt < breakerOpts.cooldownMs) return false
+      if (sub.breaker.trialInFlight) return false
       sub.breaker.state = 'half-open'
+      sub.breaker.trialInFlight = true
+      return true
     }
+    if (sub.breaker.state === 'half-open') return !sub.breaker.trialInFlight
     return true
   }
 
   const recordSuccess = (sub: Sub): void => {
     sub.breaker.failures = 0
     sub.breaker.state = 'closed'
+    sub.breaker.trialInFlight = false
   }
 
   const recordFailure = (sub: Sub): void => {
@@ -141,6 +146,7 @@ export function createMemoryBroker(opts: BrokerOptions = {}): Broker {
       sub.breaker.state = 'open'
       sub.breaker.openedAt = now()
       sub.breaker.failures = 0
+      sub.breaker.trialInFlight = false
       return
     }
     sub.breaker.failures += 1
@@ -201,7 +207,7 @@ export function createMemoryBroker(opts: BrokerOptions = {}): Broker {
       if (!validSubject(pattern, true)) throw new SubjectError('invalid pattern')
       const queue = opts?.queue
       if (queue !== undefined && queue.trim() === '') throw new SubjectError('invalid queue')
-      const sub: Sub = { id: nextId++, pattern, queue, handler, breaker: { state: 'closed', failures: 0, openedAt: 0 } }
+      const sub: Sub = { id: nextId++, pattern, queue, handler, breaker: { state: 'closed', failures: 0, openedAt: 0, trialInFlight: false } }
       subs.push(sub)
       return {
         unsubscribe() {
